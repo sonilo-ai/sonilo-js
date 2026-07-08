@@ -1,4 +1,5 @@
 import { SoniloError, errorFromResponse } from "./errors.js";
+import { Account } from "./resources/account.js";
 import { TextToMusic } from "./resources/textToMusic.js";
 import { VideoToMusic } from "./resources/videoToMusic.js";
 import { VERSION } from "./version.js";
@@ -18,6 +19,7 @@ export class SoniloClient {
   readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
+  readonly account: Account;
   readonly textToMusic: TextToMusic;
   readonly videoToMusic: VideoToMusic;
 
@@ -33,6 +35,7 @@ export class SoniloClient {
     this.apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.account = new Account(this);
     this.textToMusic = new TextToMusic(this);
     this.videoToMusic = new VideoToMusic(this);
   }
