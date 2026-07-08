@@ -28,7 +28,7 @@ export class SoniloClient {
     }
     this.apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.fetchFn = options.fetch ?? globalThis.fetch;
+    this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   /** Perform an authenticated request; throws a typed error on non-2xx. */
