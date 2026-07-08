@@ -1,5 +1,6 @@
 import { SoniloError, errorFromResponse } from "./errors.js";
 import { TextToMusic } from "./resources/textToMusic.js";
+import { VideoToMusic } from "./resources/videoToMusic.js";
 import { VERSION } from "./version.js";
 
 export interface SoniloClientOptions {
@@ -18,6 +19,7 @@ export class SoniloClient {
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
   readonly textToMusic: TextToMusic;
+  readonly videoToMusic: VideoToMusic;
 
   constructor(options: SoniloClientOptions = {}) {
     const envKey =
@@ -32,6 +34,7 @@ export class SoniloClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.textToMusic = new TextToMusic(this);
+    this.videoToMusic = new VideoToMusic(this);
   }
 
   /** Perform an authenticated request; throws a typed error on non-2xx. */
