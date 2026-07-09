@@ -123,3 +123,11 @@ export interface UsageResponse {
   summary: UsageSummary;
   daily: DailyUsage[];
 }
+
+export function isAudioChunkEvent(event: StreamEvent): event is AudioChunkEvent {
+  return event.type === "audio_chunk" && (event as AudioChunkEvent).data instanceof Uint8Array;
+}
+
+export function isErrorEvent(event: StreamEvent): event is ErrorEvent {
+  return event.type === "error";
+}

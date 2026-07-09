@@ -29,3 +29,4 @@ export type {
   VideoInput,
   VideoToMusicParams,
 } from "./types.js";
+export { isAudioChunkEvent, isErrorEvent } from "./types.js";

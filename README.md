@@ -39,8 +39,10 @@ await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" })
 ## Streaming
 
 ```ts
+import { SoniloClient, isAudioChunkEvent } from "sonilo";
+
 for await (const event of sonilo.textToMusic.stream({ prompt: "lofi", duration: 30 })) {
-  if (event.type === "audio_chunk") {
+  if (isAudioChunkEvent(event)) {
     // event.data is a Uint8Array — feed it to your player as it arrives
   }
 }

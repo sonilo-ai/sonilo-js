@@ -38,7 +38,7 @@ export async function* parseNdjson(
     const tail = buffer.trim();
     if (tail) yield toEvent(tail);
   } finally {
-    reader.releaseLock();
+    await reader.cancel().catch(() => {});
   }
 }
 

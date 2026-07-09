@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GenerationError } from "../src/errors.js";
 import { collectTrack, decodeBase64, parseNdjson } from "../src/streaming.js";
+import { isAudioChunkEvent, isErrorEvent } from "../src/types.js";
 import type { AudioChunkEvent, StreamEvent } from "../src/types.js";
 
 function b64(s: string): string {
@@ -76,6 +77,33 @@ describe("parseNdjson", () => {
     const text = JSON.stringify({ type: "stage_start", stage: "analyze" }) + "\n";
     const events = await collect(chunkedStream(text, 5));
     expect(events).toEqual([{ type: "stage_start", stage: "analyze" }]);
+  });
+
+  it("cancels the source stream when the consumer stops early", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const bytes = new TextEncoder().encode(
+          JSON.stringify({ type: "title", title: "t" }) + "\n" + JSON.stringify({ type: "complete" }) + "\n",
+        );
+        controller.enqueue(bytes);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    for await (const ev of parseNdjson(stream)) {
+      if (ev.type === "title") break;
+    }
+    expect(cancelled).toBe(true);
+  });
+
+  it("type guards narrow stream events", async () => {
+    const events = await collect(chunkedStream(LINES, 9));
+    const chunks = events.filter(isAudioChunkEvent);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.data).toBeInstanceOf(Uint8Array);
+    expect(events.filter(isErrorEvent)).toHaveLength(0);
   });
 });
 
