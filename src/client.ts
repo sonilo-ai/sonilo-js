@@ -34,7 +34,7 @@ export class SoniloClient {
     }
     this.apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-    this.fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.fetchFn = (options.fetch ?? globalThis.fetch).bind(globalThis);
     this.account = new Account(this);
     this.textToMusic = new TextToMusic(this);
     this.videoToMusic = new VideoToMusic(this);

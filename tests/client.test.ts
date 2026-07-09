@@ -31,6 +31,20 @@ describe("SoniloClient constructor", () => {
     const client = new SoniloClient({ apiKey: "sk" });
     expect(client.baseUrl).toBe("https://api.sonilo.com");
   });
+
+  it("calls a user-supplied fetch with a safe receiver", async () => {
+    const calls: unknown[] = [];
+    const brandCheckedFetch = function (this: unknown, input: RequestInfo | URL) {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      calls.push(String(input));
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    } as typeof fetch;
+    const client = new SoniloClient({ apiKey: "sk", fetch: brandCheckedFetch });
+    await expect(client.request("/v1/account/services")).resolves.toBeInstanceOf(Response);
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe("request", () => {

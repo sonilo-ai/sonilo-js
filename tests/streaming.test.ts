@@ -160,4 +160,15 @@ describe("collectTrack", () => {
       await collectTrack(parseNdjson(chunkedStream(text, 100)));
     }).rejects.toBeInstanceOf(GenerationError);
   });
+
+  it("throws GenerationError when the stream ends without a complete event", async () => {
+    const text = JSON.stringify({ type: "audio_chunk", data: b64("half") }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+    });
+  });
+
+  it("throws GenerationError on an entirely empty stream", async () => {
+    await expect(collectTrack(parseNdjson(chunkedStream("", 1)))).rejects.toBeInstanceOf(GenerationError);
+  });
 });

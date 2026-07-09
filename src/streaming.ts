@@ -46,6 +46,7 @@ export async function collectTrack(events: AsyncIterable<StreamEvent>): Promise<
   const chunks: Uint8Array[] = [];
   let title: string | undefined;
   let cost: CostInfo | undefined;
+  let sawComplete = false;
 
   for await (const ev of events) {
     if (ev.type === "audio_chunk" && ev.data instanceof Uint8Array) {
@@ -59,8 +60,14 @@ export async function collectTrack(events: AsyncIterable<StreamEvent>): Promise<
       const message = typeof ev.message === "string" ? ev.message : "generation failed";
       const code = typeof ev.code === "string" ? ev.code : undefined;
       throw new GenerationError(message, code);
+    } else if (ev.type === "complete") {
+      sawComplete = true;
     }
-    // complete and unknown event types: ignored
+    // unknown event types: ignored
+  }
+
+  if (!sawComplete) {
+    throw new GenerationError("stream ended before a 'complete' event (truncated response)");
   }
 
   const total = chunks.reduce((n, c) => n + c.length, 0);
