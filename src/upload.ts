@@ -19,7 +19,10 @@ export async function toUploadBlob(
         "File paths are only supported in Node.js; pass a File or Blob in the browser",
       );
     }
-    const { readFile } = await import("node:fs/promises");
+    const fsModule = "node:fs/promises";
+    const { readFile } = (await import(
+      /* webpackIgnore: true */ /* @vite-ignore */ fsModule
+    )) as typeof import("node:fs/promises");
     const data = await readFile(video);
     const filename = video.split(/[\\/]/).pop() || DEFAULT_FILENAME;
     return { blob: new Blob([data]), filename };
