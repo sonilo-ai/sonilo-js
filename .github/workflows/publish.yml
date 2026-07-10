@@ -20,7 +20,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - name: Update npm (OIDC publishing requires npm >= 11.5.1)
-        run: npm install -g npm@latest
+        # Pinned to major 11: npm 12 requires Node >= 22, incompatible with
+        # this job's Node 20 (learned from a live EBADENGINE failure).
+        run: npm install -g npm@11
       - run: npm ci
       - run: npm test
       - run: npm run build
