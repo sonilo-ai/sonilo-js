@@ -19,10 +19,14 @@ function run(args: string[]): void {
 export async function makeFixtures(dir: string): Promise<{
   videoWithAudio: string;
   videoSilent: string;
+  videoSilentTrack: string;
+  videoLongSilent: string;
   musicMp3: string;
 }> {
   const videoWithAudio = join(dir, "with_audio.mp4");
   const videoSilent = join(dir, "silent.mp4");
+  const videoSilentTrack = join(dir, "silent_track.mp4");
+  const videoLongSilent = join(dir, "long_silent.mp4");
   const musicMp3 = join(dir, "music.mp3");
   run([
     "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
@@ -35,6 +39,17 @@ export async function makeFixtures(dir: string): Promise<{
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
     videoSilent,
   ]);
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+    videoSilentTrack,
+  ]);
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=4:size=128x72:rate=10",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+    videoLongSilent,
+  ]);
   run(["-f", "lavfi", "-i", "sine=frequency=220:duration=2", "-c:a", "libmp3lame", musicMp3]);
-  return { videoWithAudio, videoSilent, musicMp3 };
+  return { videoWithAudio, videoSilent, videoSilentTrack, videoLongSilent, musicMp3 };
 }

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FfmpegNotFoundError, VideoKitError } from "../src/errors.js";
-import { probeVideo } from "../src/ffmpeg.js";
+import { measureIntegratedLufs, probeVideo } from "../src/ffmpeg.js";
 import { mixWithVideo } from "../src/mix.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
 
@@ -20,8 +20,9 @@ describe.skipIf(!hasFfmpeg)("mixWithVideo (requires ffmpeg on PATH)", () => {
     const probe = await probeVideo(output, "ffprobe");
     expect(probe.hasAudio).toBe(true);
     expect(probe.audioCodec).toBe("aac");
+    expect(probe.videoCodec).toBe("h264"); // -c:v copy preserved the original stream
     expect(probe.durationSeconds).toBeGreaterThan(0.5);
-    expect(probe.durationSeconds).toBeLessThan(2); // capped by -shortest to the 1 s video
+    expect(probe.durationSeconds).toBeLessThan(2); // capped by atrim to the 1 s video
   }
 
   it("mixes music with the original audio (matched path, defaults)", async () => {
@@ -78,6 +79,21 @@ describe.skipIf(!hasFfmpeg)("mixWithVideo (requires ffmpeg on PATH)", () => {
         output: join(dir, "never.mp4"),
       }),
     ).rejects.toBeInstanceOf(VideoKitError);
+  });
+
+  it("keeps music audible when the original track is digital silence", async () => {
+    const output = join(dir, "mixed_silent_track.mp4");
+    await mixWithVideo({ video: fx.videoSilentTrack, audio: fx.musicMp3, output });
+    const lufs = await measureIntegratedLufs(output, "ffmpeg");
+    expect(lufs).not.toBeNull();
+    expect(lufs!).toBeGreaterThan(-35); // was ~-62 before the fix
+  });
+
+  it("pads short music instead of truncating the video", async () => {
+    const output = join(dir, "mixed_padded.mp4");
+    await mixWithVideo({ video: fx.videoLongSilent, audio: fx.musicMp3, output }); // 2 s music, 4 s video
+    const probe = await probeVideo(output, "ffprobe");
+    expect(probe.durationSeconds).toBeGreaterThan(3.5);
   });
 });
 

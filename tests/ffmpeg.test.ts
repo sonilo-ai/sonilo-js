@@ -21,6 +21,7 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     expect(withAudio.durationSeconds).toBeLessThan(2);
     expect(withAudio.hasAudio).toBe(true);
     expect(withAudio.audioCodec).toBe("aac");
+    expect(withAudio.videoCodec).toBe("h264");
 
     const silent = await probeVideo(fx.videoSilent, "ffprobe");
     expect(silent.hasAudio).toBe(false);

@@ -14,6 +14,12 @@ import {
   originalFinalGain,
 } from "./loudness.js";
 
+// ebur128 reports digital silence around its gate floor (-70 LUFS on modern
+// ffmpeg) rather than -inf. An anchor that quiet means "no usable original
+// signal" — anchoring to it would mute the music, so fall back to the same
+// reference used when the video has no audio track at all.
+const SILENCE_FLOOR_LUFS = -60;
+
 export interface MixWithVideoOptions {
   /** Path to the video file. */
   video: string;
@@ -84,9 +90,11 @@ export async function mixWithVideo(options: MixWithVideoOptions): Promise<string
     let originalGain = originalVolume;
     if (loudnessMatch) {
       const musicLufs = await measureIntegratedLufs(musicPath, ffmpegPath);
-      const anchorLufs = originalPath
+      const rawAnchor = originalPath
         ? await measureIntegratedLufs(originalPath, ffmpegPath)
         : FALLBACK_MUSIC_LUFS;
+      const anchorLufs =
+        rawAnchor !== null && rawAnchor <= SILENCE_FLOOR_LUFS ? FALLBACK_MUSIC_LUFS : rawAnchor;
       if (musicLufs !== null && anchorLufs !== null) {
         musicGain = gapGain(anchorLufs - GAP_BELOW_VOICE_LU, musicLufs, musicVolume);
         originalGain = originalFinalGain(originalVolume);
@@ -96,6 +104,11 @@ export async function mixWithVideo(options: MixWithVideoOptions): Promise<string
     const ceiling = dbToLinear(OUTPUT_CEILING_DBFS).toFixed(6);
     const limiter = `alimiter=limit=${ceiling}:level=disabled`;
     const mixedPath = normalize ? join(workDir, "mixed.mp4") : output;
+    // Cap audio to the probed video duration instead of -shortest: -shortest
+    // truncates the picture to whichever input is shorter, which cuts the
+    // video down to a too-short music track. atrim/apad instead pad short
+    // music with silence and let ffmpeg cut only excess audio.
+    const dur = probe.durationSeconds.toFixed(3);
 
     let filter: string;
     let inputs: string[];
@@ -104,10 +117,11 @@ export async function mixWithVideo(options: MixWithVideoOptions): Promise<string
       filter =
         `[1:a]volume=${musicGain.toFixed(6)}[m];` +
         `[2:a]volume=${originalGain.toFixed(6)}[o];` +
-        `[m][o]amix=inputs=2:duration=first:normalize=0,${limiter}[aout]`;
+        `[m][o]amix=inputs=2:duration=longest:normalize=0,` +
+        `atrim=end=${dur},asetpts=N/SR/TB,apad=whole_dur=${dur},${limiter}[aout]`;
     } else {
       inputs = ["-i", video, "-i", musicPath];
-      filter = `[1:a]volume=${musicGain.toFixed(6)},${limiter}[aout]`;
+      filter = `[1:a]volume=${musicGain.toFixed(6)},atrim=end=${dur},asetpts=N/SR/TB,apad=whole_dur=${dur},${limiter}[aout]`;
     }
 
     await runProcess(ffmpegPath, [
@@ -115,7 +129,6 @@ export async function mixWithVideo(options: MixWithVideoOptions): Promise<string
       "-filter_complex", filter,
       "-map", "0:v", "-map", "[aout]",
       "-c:v", "copy", "-c:a", "aac",
-      "-shortest",
       mixedPath,
     ]);
 

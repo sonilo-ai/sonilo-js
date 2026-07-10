@@ -35,6 +35,8 @@ By default the kit measures the loudness (LUFS) of your video's own audio and
 of the generated music, then sits the music 4 LU below the original — so
 dialogue stays intelligible without hand-tuning. The final file is normalized
 to −14 LUFS (streaming-platform delivery level) with a −1 dBFS peak limiter.
+The delivery-normalize boost is capped at +12 dB; attenuation (bringing an
+overly loud render down to target) is uncapped.
 
 - `musicVolume` (0–1, default 0.5): 0.5 is the matched level; each step of
   0.25 shifts ±6 dB (full range ±12 dB). 0 mutes the music.

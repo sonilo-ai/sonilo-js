@@ -57,6 +57,7 @@ export interface ProbeResult {
   durationSeconds: number;
   hasAudio: boolean;
   audioCodec: string | null;
+  videoCodec: string | null;
 }
 
 export async function probeVideo(video: string, ffprobePath: string): Promise<ProbeResult> {
@@ -79,10 +80,12 @@ export async function probeVideo(video: string, ffprobePath: string): Promise<Pr
     throw new VideoKitError(`Could not determine a valid duration for ${video}; refusing to render`);
   }
   const audioStream = parsed.streams?.find((s) => s.codec_type === "audio");
+  const videoStream = parsed.streams?.find((s) => s.codec_type === "video");
   return {
     durationSeconds,
     hasAudio: audioStream !== undefined,
     audioCodec: audioStream?.codec_name ?? null,
+    videoCodec: videoStream?.codec_name ?? null,
   };
 }
 
