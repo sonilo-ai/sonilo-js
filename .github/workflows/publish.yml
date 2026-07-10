@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance
+      # OIDC trusted publishing + provenance. No NPM_TOKEN secret needed.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,9 +19,29 @@ jobs:
           node-version: 20
           cache: npm
           registry-url: https://registry.npmjs.org
+      - name: Update npm (OIDC publishing requires npm >= 11.5.1)
+        run: npm install -g npm@latest
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+      - name: Publish (skip if version already on the registry)
+        # Tag refs only: a workflow_dispatch on a branch runs tests/build but
+        # never publishes. To retry a failed publish, dispatch on the tag:
+        # gh workflow run publish.yml --ref vX.Y.Z
+        if: github.ref_type == 'tag'
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "sonilo@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "sonilo@${PKG_VERSION} already published — skipping"
+          else
+            npm publish --provenance --access public
+          fi
