@@ -37,7 +37,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "sonilo": "file:../sonilo-js"
+    "sonilo": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
