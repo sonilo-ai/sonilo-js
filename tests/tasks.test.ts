@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest";
+import { TaskFailedError, TaskTimeoutError } from "../src/errors.js";
+import { mockClient } from "./helpers.js";
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+const PROCESSING = { task_id: "t1", type: "text_to_sfx", status: "processing" };
+const SUCCEEDED = {
+  task_id: "t1",
+  type: "text_to_sfx",
+  status: "succeeded",
+  audio: { url: "https://r2.example.com/audio.m4a", content_type: "audio/mp4", file_size: 123 },
+};
+const FAILED = {
+  task_id: "t1",
+  type: "text_to_sfx",
+  status: "failed",
+  error: { code: "GENERATION_FAILED", message: "boom" },
+  refunded: true,
+};
+
+describe("tasks.get", () => {
+  it("fetches one task with auth", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(SUCCEEDED));
+    const result = await client.tasks.get("t1");
+    expect(calls[0]!.url).toBe("https://api.sonilo.com/v1/tasks/t1");
+    expect(result.status).toBe("succeeded");
+    expect(result.audio?.url).toBe("https://r2.example.com/audio.m4a");
+  });
+
+  it("returns failed results as data without throwing", async () => {
+    const { client } = mockClient(() => jsonResponse(FAILED));
+    const result = await client.tasks.get("t1");
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("GENERATION_FAILED");
+    expect(result.refunded).toBe(true);
+  });
+});
+
+describe("tasks.wait", () => {
+  it("polls until succeeded", async () => {
+    let n = 0;
+    const { client, calls } = mockClient(() => jsonResponse(++n < 3 ? PROCESSING : SUCCEEDED));
+    const result = await client.tasks.wait("t1", { pollInterval: 0 });
+    expect(result.status).toBe("succeeded");
+    expect(calls.length).toBe(3);
+  });
+
+  it("throws TaskFailedError with code and refunded", async () => {
+    const { client } = mockClient(() => jsonResponse(FAILED));
+    const err = await client.tasks.wait("t1", { pollInterval: 0 }).catch((e) => e);
+    expect(err).toBeInstanceOf(TaskFailedError);
+    expect(err.code).toBe("GENERATION_FAILED");
+    expect(err.taskId).toBe("t1");
+    expect(err.refunded).toBe(true);
+  });
+
+  it("throws TaskTimeoutError when the deadline passes", async () => {
+    const { client } = mockClient(() => jsonResponse(PROCESSING));
+    await expect(
+      client.tasks.wait("t1", { pollInterval: 0, timeout: 0 }),
+    ).rejects.toBeInstanceOf(TaskTimeoutError);
+  });
+});
