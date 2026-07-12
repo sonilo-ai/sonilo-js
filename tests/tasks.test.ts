@@ -32,6 +32,12 @@ describe("tasks.get", () => {
     expect(result.audio?.url).toBe("https://r2.example.com/audio.m4a");
   });
 
+  it("URL-encodes the taskId path segment", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(PROCESSING));
+    await client.tasks.get("t1/../other");
+    expect(calls[0]!.url).toBe("https://api.sonilo.com/v1/tasks/t1%2F..%2Fother");
+  });
+
   it("returns failed results as data without throwing", async () => {
     const { client } = mockClient(() => jsonResponse(FAILED));
     const result = await client.tasks.get("t1");

@@ -108,7 +108,9 @@ const usage = await sonilo.account.usage({ days: 7 });
 All errors extend `SoniloError`: `AuthenticationError` (401),
 `PaymentRequiredError` (402), `RateLimitError` (429, `.retryAfter`),
 `BadRequestError` (400/413/422, `.detail`), `APIError` (anything else),
-and `GenerationError` for failures mid-stream.
+`GenerationError` for failures mid-stream, `TaskFailedError` (`.code`,
+`.taskId`, `.refunded`) for a failed SFX task, and `TaskTimeoutError`
+(`.taskId`) when `tasks.wait()` / `generate()` hits its deadline.
 
 ## License
 

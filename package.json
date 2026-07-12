@@ -41,6 +41,8 @@
     "generation",
     "text-to-music",
     "video-to-music",
-    "ai"
+    "ai",
+    "sfx",
+    "sound-effects"
   ]
 }
