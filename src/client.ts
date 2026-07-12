@@ -3,6 +3,8 @@ import { Account } from "./resources/account.js";
 import { Tasks } from "./resources/tasks.js";
 import { TextToMusic } from "./resources/textToMusic.js";
 import { VideoToMusic } from "./resources/videoToMusic.js";
+import { TextToSfx } from "./resources/textToSfx.js";
+import { VideoToSfx } from "./resources/videoToSfx.js";
 import { VERSION } from "./version.js";
 
 export interface SoniloClientOptions {
@@ -24,6 +26,8 @@ export class SoniloClient {
   readonly tasks: Tasks;
   readonly textToMusic: TextToMusic;
   readonly videoToMusic: VideoToMusic;
+  readonly textToSfx: TextToSfx;
+  readonly videoToSfx: VideoToSfx;
 
   constructor(options: SoniloClientOptions = {}) {
     const envKey =
@@ -41,6 +45,8 @@ export class SoniloClient {
     this.tasks = new Tasks(this);
     this.textToMusic = new TextToMusic(this);
     this.videoToMusic = new VideoToMusic(this);
+    this.textToSfx = new TextToSfx(this);
+    this.videoToSfx = new VideoToSfx(this);
   }
 
   /** Perform an authenticated request; throws a typed error on non-2xx. */
