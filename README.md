@@ -137,6 +137,11 @@ by its own `timeout` (a caller-supplied `AbortSignal` is never rewrapped
 this way, and streaming music generation is never subject to this timeout
 at all).
 
+Every `APIError` also carries `.status`, `.body` (the parsed response),
+`.code` (the API's error code, e.g. `"rate_limit_exceeded"`), and `.errors`
+(the validation detail array on a 422), in addition to any subclass-specific
+properties above.
+
 ## License
 
 MIT

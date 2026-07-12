@@ -8,11 +8,18 @@ export class SoniloError extends Error {
 export class APIError extends SoniloError {
   readonly status: number;
   readonly body: unknown;
+  /** The API's typed error code (e.g. "rate_limit_exceeded"), distinct from the HTTP status. */
+  readonly code?: string;
+  /** Per-field validation details, present on a 422. */
+  readonly errors?: unknown[];
 
   constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.status = status;
     this.body = body;
+    const parsed = body as { code?: unknown; errors?: unknown } | undefined;
+    this.code = typeof parsed?.code === "string" ? parsed.code : undefined;
+    this.errors = Array.isArray(parsed?.errors) ? parsed.errors : undefined;
   }
 }
 
@@ -22,7 +29,10 @@ export class PaymentRequiredError extends APIError {}
 
 export class BadRequestError extends APIError {
   get detail(): string | undefined {
-    const body = this.body as { detail?: unknown } | undefined;
+    const body = this.body as { message?: unknown; detail?: unknown } | undefined;
+    if (typeof body?.message === "string" && body.message) {
+      return body.message;
+    }
     return typeof body?.detail === "string" ? body.detail : undefined;
   }
 }
@@ -97,21 +107,25 @@ export async function errorFromResponse(res: Response): Promise<APIError> {
   } catch {
     // keep raw text
   }
-  const rawDetail = (body as { detail?: unknown } | undefined)?.detail;
-  const isAbsent = rawDetail === undefined || rawDetail === null || rawDetail === "";
-  let detail: string;
-  if (isAbsent) {
-    detail = res.statusText || "request failed";
+  const parsed = body as { message?: unknown; detail?: unknown } | undefined;
+  const rawMessage = typeof parsed?.message === "string" && parsed.message ? parsed.message : undefined;
+  const rawDetail = parsed?.detail;
+  const isDetailAbsent = rawDetail === undefined || rawDetail === null || rawDetail === "";
+  let reason: string;
+  if (rawMessage !== undefined) {
+    reason = rawMessage;
+  } else if (isDetailAbsent) {
+    reason = res.statusText || "request failed";
   } else if (typeof rawDetail === "string") {
-    detail = rawDetail;
+    reason = rawDetail;
   } else {
     try {
-      detail = JSON.stringify(rawDetail);
+      reason = JSON.stringify(rawDetail);
     } catch {
-      detail = res.statusText || "request failed";
+      reason = res.statusText || "request failed";
     }
   }
-  const message = `HTTP ${res.status}: ${detail}`;
+  const message = `HTTP ${res.status}: ${reason}`;
 
   switch (res.status) {
     case 401:
