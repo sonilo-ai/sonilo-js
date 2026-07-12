@@ -141,7 +141,3 @@ Every `APIError` also carries `.status`, `.body` (the parsed response),
 `.code` (the API's error code, e.g. `"rate_limit_exceeded"`), and `.errors`
 (the validation detail array on a 422), in addition to any subclass-specific
 properties above.
-
-## License
-
-MIT
