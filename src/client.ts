@@ -14,14 +14,20 @@ export interface SoniloClientOptions {
   baseUrl?: string;
   /** Injection point for tests and custom transports. */
   fetch?: typeof globalThis.fetch;
+  /** Milliseconds before an in-flight request is aborted. Default 600000. */
+  timeout?: number;
 }
 
 const DEFAULT_BASE_URL = "https://api.sonilo.com";
+
+/** Milliseconds before an in-flight request is aborted, unless overridden. */
+export const DEFAULT_TIMEOUT_MS = 600_000;
 
 export class SoniloClient {
   readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
+  private readonly timeout: number;
   readonly account: Account;
   readonly tasks: Tasks;
   readonly textToMusic: TextToMusic;
@@ -41,6 +47,7 @@ export class SoniloClient {
     this.apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.fetchFn = (options.fetch ?? globalThis.fetch).bind(globalThis);
+    this.timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     this.account = new Account(this);
     this.tasks = new Tasks(this);
     this.textToMusic = new TextToMusic(this);
@@ -55,7 +62,8 @@ export class SoniloClient {
     headers.set("Authorization", `Bearer ${this.apiKey}`);
     headers.set("X-Sonilo-Client", "sdk-js");
     headers.set("X-Sonilo-Client-Version", VERSION);
-    const res = await this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers });
+    const signal = init.signal ?? AbortSignal.timeout(this.timeout);
+    const res = await this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers, signal });
     if (!res.ok) throw await errorFromResponse(res);
     return res;
   }

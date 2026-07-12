@@ -49,6 +49,16 @@ describe("errorFromResponse", () => {
     expect((err as BadRequestError).detail).toBe("bad input");
   });
 
+  it("stringifies a structured (non-string) detail, e.g. FastAPI 422 validation errors", async () => {
+    const err = await errorFromResponse(
+      jsonResponse(422, {
+        detail: [{ loc: ["body", "duration"], msg: "field required", type: "missing" }],
+      }),
+    );
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.message).toContain("field required");
+  });
+
   it("maps other statuses to APIError and keeps non-JSON body as text", async () => {
     const err = await errorFromResponse(new Response("boom", { status: 500 }));
     expect(err).toBeInstanceOf(APIError);

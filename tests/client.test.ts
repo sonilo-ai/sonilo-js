@@ -69,4 +69,17 @@ describe("request", () => {
     );
     await expect(client.request("/v1/account/usage")).rejects.toBeInstanceOf(AuthenticationError);
   });
+
+  it("attaches a default abort signal to every request", async () => {
+    const { client, calls } = mockClient(() => new Response("{}", { status: 200 }));
+    await client.request("/v1/account/services");
+    expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("does not overwrite a caller-supplied abort signal", async () => {
+    const { client, calls } = mockClient(() => new Response("{}", { status: 200 }));
+    const controller = new AbortController();
+    await client.request("/v1/account/services", { signal: controller.signal });
+    expect(calls[0]!.init.signal).toBe(controller.signal);
+  });
 });

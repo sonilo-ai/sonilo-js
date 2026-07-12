@@ -71,4 +71,17 @@ describe("tasks.wait", () => {
       client.tasks.wait("t1", { pollInterval: 0, timeout: 0 }),
     ).rejects.toBeInstanceOf(TaskTimeoutError);
   });
+
+  it("falls back to 'Generation failed' when the error message is an empty string", async () => {
+    const { client } = mockClient(() =>
+      jsonResponse({
+        task_id: "t1",
+        status: "failed",
+        error: { code: "X", message: "" },
+      }),
+    );
+    const err = await client.tasks.wait("t1", { pollInterval: 0 }).catch((e) => e);
+    expect(err).toBeInstanceOf(TaskFailedError);
+    expect((err as Error).message).toBe("Task t1 failed: Generation failed");
+  });
 });

@@ -1,4 +1,4 @@
-export { SoniloClient, type SoniloClientOptions } from "./client.js";
+export { DEFAULT_TIMEOUT_MS, SoniloClient, type SoniloClientOptions } from "./client.js";
 export {
   APIError,
   AuthenticationError,

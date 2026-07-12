@@ -20,19 +20,19 @@ export class Tasks {
   async wait(taskId: string, opts: WaitOptions = {}): Promise<SfxResult> {
     const pollInterval = opts.pollInterval ?? DEFAULT_POLL_INTERVAL_MS;
     const timeout = opts.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
-    const deadline = Date.now() + timeout;
+    const deadline = performance.now() + timeout;
     for (;;) {
       const result = await this.get(taskId);
       if (result.status === "succeeded") return result;
       if (result.status === "failed") {
-        const message = result.error?.message ?? "Generation failed";
+        const message = result.error?.message || "Generation failed";
         throw new TaskFailedError(`Task ${taskId} failed: ${message}`, {
           code: result.error?.code,
           taskId,
           refunded: result.refunded,
         });
       }
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new TaskTimeoutError(
           `Task ${taskId} still processing after ${timeout}ms; ` +
             "it may finish later — resume with tasks.wait or tasks.get",

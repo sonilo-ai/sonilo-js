@@ -76,7 +76,7 @@ import { writeFile } from "node:fs/promises";
 
 const client = new SoniloClient();
 const result = await client.textToSfx.generate({ prompt: "glass shattering", duration: 5 });
-await writeFile("sfx.m4a", await download(result.audio!));
+await writeFile("sfx.m4a", await download(result.audio));
 ```
 
 Or control polling yourself:
