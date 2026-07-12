@@ -65,6 +65,37 @@ await sonilo.textToMusic.generate({
 });
 ```
 
+## Sound effects (async tasks)
+
+SFX endpoints are asynchronous: submitting returns a `task_id`, and the result
+is fetched by polling. `generate()` wraps submit + poll:
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+const result = await client.textToSfx.generate({ prompt: "glass shattering", duration: 5 });
+await writeFile("sfx.m4a", await download(result.audio!));
+```
+
+Or control polling yourself:
+
+```ts
+const task = await client.videoToSfx.submit({
+  video: "clip.mp4", // Node.js path; pass File/Blob in the browser
+  segments: [{ start: 0, end: 2.5, prompt: "footsteps on gravel" }],
+  audioFormat: "wav",
+});
+const result = await client.tasks.wait(task.task_id, { pollInterval: 2000, timeout: 600000 });
+```
+
+`tasks.get(taskId)` fetches state once and never throws on a failed task;
+`tasks.wait()` / `generate()` throw `TaskFailedError` (with `.code`,
+`.refunded`) on failure and `TaskTimeoutError` if the deadline passes — the
+task keeps running server-side and can still be polled afterwards. Result URLs
+are presigned and expire; download promptly or re-fetch via `tasks.get`.
+
 ## Account
 
 ```ts
