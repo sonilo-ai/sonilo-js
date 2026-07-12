@@ -84,7 +84,7 @@ export async function collectTrack(events: AsyncIterable<StreamEvent>): Promise<
       const { type: _type, ...rest } = ev;
       cost = rest as CostInfo;
     } else if (ev.type === "error") {
-      const message = typeof ev.message === "string" ? ev.message : "generation failed";
+      const message = typeof ev.message === "string" && ev.message !== "" ? ev.message : "generation failed";
       const code = typeof ev.code === "string" ? ev.code : undefined;
       throw new GenerationError(message, code);
     } else if (ev.type === "complete") {

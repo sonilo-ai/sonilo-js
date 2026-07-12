@@ -194,6 +194,42 @@ describe("collectTrack", () => {
     }).rejects.toBeInstanceOf(GenerationError);
   });
 
+  it("throws GenerationError with default message on empty-string error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: "" }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on missing error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR" }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on null error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: null }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on non-string error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: 12345 }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
   it("throws GenerationError when the stream ends without a complete event", async () => {
     const text = JSON.stringify({ type: "audio_chunk", data: b64("half") }) + "\n";
     await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
