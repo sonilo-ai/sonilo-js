@@ -79,6 +79,12 @@ describe("parseNdjson", () => {
     expect(events).toEqual([{ type: "stage_start", stage: "analyze" }]);
   });
 
+  it("skips a bare `null` line instead of throwing a raw TypeError", async () => {
+    const text = "null\n" + JSON.stringify({ type: "complete" }) + "\n";
+    const events = await collect(chunkedStream(text, 4));
+    expect(events).toEqual([{ type: "complete" }]);
+  });
+
   it("cancels the source stream when the consumer stops early", async () => {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -170,5 +176,31 @@ describe("collectTrack", () => {
 
   it("throws GenerationError on an entirely empty stream", async () => {
     await expect(collectTrack(parseNdjson(chunkedStream("", 1)))).rejects.toBeInstanceOf(GenerationError);
+  });
+
+  it("throws GenerationError instead of silently dropping an audio_chunk with missing data", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
+  });
+
+  it("throws GenerationError instead of silently dropping an audio_chunk with non-string data", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: 12345 }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
   });
 });

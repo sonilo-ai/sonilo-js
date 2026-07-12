@@ -8,8 +8,13 @@ export function decodeBase64(b64: string): Uint8Array {
   return out;
 }
 
-function toEvent(line: string): StreamEvent {
-  const raw = JSON.parse(line) as { type: string; [key: string]: unknown };
+/** Returns `null` for a valid-JSON-but-non-object line (e.g. a bare `null`
+ * or a number/string), which carries no event `type` and is skipped like any
+ * other junk line rather than crashing on a `.type` read off `null`. */
+function toEvent(line: string): StreamEvent | null {
+  const parsed: unknown = JSON.parse(line);
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const raw = parsed as { type: string; [key: string]: unknown };
   if (raw.type === "audio_chunk" && typeof raw.data === "string") {
     return { ...raw, type: "audio_chunk", data: decodeBase64(raw.data) };
   }
@@ -31,12 +36,18 @@ export async function* parseNdjson(
       while ((nl = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, nl).trim();
         buffer = buffer.slice(nl + 1);
-        if (line) yield toEvent(line);
+        if (line) {
+          const ev = toEvent(line);
+          if (ev !== null) yield ev;
+        }
       }
     }
     buffer += decoder.decode();
     const tail = buffer.trim();
-    if (tail) yield toEvent(tail);
+    if (tail) {
+      const ev = toEvent(tail);
+      if (ev !== null) yield ev;
+    }
   } finally {
     await reader.cancel().catch(() => {});
   }
@@ -49,7 +60,15 @@ export async function collectTrack(events: AsyncIterable<StreamEvent>): Promise<
   let sawComplete = false;
 
   for await (const ev of events) {
-    if (ev.type === "audio_chunk" && ev.data instanceof Uint8Array) {
+    if (ev.type === "audio_chunk") {
+      // A malformed chunk (missing/non-decodable `data`) must not be
+      // silently dropped: that would hand back a "successful" Track with
+      // empty or truncated audio and no indication anything went wrong.
+      if (!(ev.data instanceof Uint8Array)) {
+        throw new GenerationError(
+          "received a malformed audio_chunk event (missing or non-decodable data)",
+        );
+      }
       chunks.push(ev.data);
     } else if (ev.type === "title" && typeof ev.title === "string") {
       title = ev.title;
