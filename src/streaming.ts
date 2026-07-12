@@ -16,7 +16,15 @@ function toEvent(line: string): StreamEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const raw = parsed as { type: string; [key: string]: unknown };
   if (raw.type === "audio_chunk" && typeof raw.data === "string") {
-    return { ...raw, type: "audio_chunk", data: decodeBase64(raw.data) };
+    try {
+      return { ...raw, type: "audio_chunk", data: decodeBase64(raw.data) };
+    } catch {
+      // Don't raise here: this must reach collectTrack's malformed-chunk
+      // check, which turns undecodable data into a typed GenerationError.
+      // Raising in place would let a raw DOMException escape
+      // stream()/generate(), breaking the SDK's "all errors extend
+      // SoniloError" contract.
+    }
   }
   return raw as StreamEvent;
 }

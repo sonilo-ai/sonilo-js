@@ -111,6 +111,33 @@ describe("parseNdjson", () => {
     expect(chunks[0]!.data).toBeInstanceOf(Uint8Array);
     expect(events.filter(isErrorEvent)).toHaveLength(0);
   });
+
+  it("yields an undecodable audio_chunk with its original string data instead of throwing", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "not-valid-base64!!!" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const events = await collect(chunkedStream(text, 9));
+    const chunk = events.find((e) => e.type === "audio_chunk") as AudioChunkEvent;
+    expect(chunk.data).toBe("not-valid-base64!!!");
+  });
+
+  it("decodes an empty-string audio_chunk to a zero-length Uint8Array", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const events = await collect(chunkedStream(text, 9));
+    const chunk = events.find((e) => e.type === "audio_chunk") as AudioChunkEvent;
+    expect(chunk.data).toBeInstanceOf(Uint8Array);
+    expect((chunk.data as Uint8Array).length).toBe(0);
+  });
 });
 
 describe("collectTrack", () => {
@@ -202,5 +229,31 @@ describe("collectTrack", () => {
     await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
       GenerationError,
     );
+  });
+
+  it("throws GenerationError (not a raw DOMException) when audio_chunk data fails base64 decoding", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "not-valid-base64!!!" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
+  });
+
+  it("still decodes an empty-string audio_chunk to a zero-length track without raising", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const track = await collectTrack(parseNdjson(chunkedStream(text, 9)));
+    expect(track.audio).toBeInstanceOf(Uint8Array);
+    expect(track.audio.length).toBe(0);
   });
 });
