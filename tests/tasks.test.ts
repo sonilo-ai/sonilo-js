@@ -72,6 +72,16 @@ describe("tasks.wait", () => {
     ).rejects.toBeInstanceOf(TaskTimeoutError);
   });
 
+  it("clamps the poll sleep to the remaining deadline instead of sleeping the full interval", async () => {
+    const { client } = mockClient(() => jsonResponse(PROCESSING));
+    const start = performance.now();
+    await expect(
+      client.tasks.wait("t1", { pollInterval: 10_000, timeout: 20 }),
+    ).rejects.toBeInstanceOf(TaskTimeoutError);
+    // Without clamping this would wait ~10s for the first sleep to elapse.
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it("falls back to 'Generation failed' when the error message is an empty string", async () => {
     const { client } = mockClient(() =>
       jsonResponse({

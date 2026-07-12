@@ -10,9 +10,15 @@ import {
   errorFromResponse,
 } from "../src/errors.js";
 
-function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+  statusText?: string,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
+    statusText,
     headers: { "content-type": "application/json", ...headers },
   });
 }
@@ -57,6 +63,26 @@ describe("errorFromResponse", () => {
     );
     expect(err).toBeInstanceOf(BadRequestError);
     expect(err.message).toContain("field required");
+  });
+
+  it("falls back to statusText when detail is null", async () => {
+    const err = await errorFromResponse(
+      jsonResponse(422, { detail: null }, undefined, "Unprocessable Entity"),
+    );
+    expect(err.message).toBe("HTTP 422: Unprocessable Entity");
+    expect(err.message).not.toContain("null");
+  });
+
+  it("falls back to statusText when detail is an empty string", async () => {
+    const err = await errorFromResponse(
+      jsonResponse(422, { detail: "" }, undefined, "Unprocessable Entity"),
+    );
+    expect(err.message).toBe("HTTP 422: Unprocessable Entity");
+  });
+
+  it("keeps a non-empty string detail as-is, e.g. a 400 bad input message", async () => {
+    const err = await errorFromResponse(jsonResponse(400, { detail: "bad input" }));
+    expect(err.message).toContain("bad input");
   });
 
   it("maps other statuses to APIError and keeps non-JSON body as text", async () => {

@@ -98,17 +98,18 @@ export async function errorFromResponse(res: Response): Promise<APIError> {
     // keep raw text
   }
   const rawDetail = (body as { detail?: unknown } | undefined)?.detail;
+  const isAbsent = rawDetail === undefined || rawDetail === null || rawDetail === "";
   let detail: string;
-  if (typeof rawDetail === "string") {
+  if (isAbsent) {
+    detail = res.statusText || "request failed";
+  } else if (typeof rawDetail === "string") {
     detail = rawDetail;
-  } else if (rawDetail !== undefined) {
+  } else {
     try {
       detail = JSON.stringify(rawDetail);
     } catch {
       detail = res.statusText || "request failed";
     }
-  } else {
-    detail = res.statusText || "request failed";
   }
   const message = `HTTP ${res.status}: ${detail}`;
 

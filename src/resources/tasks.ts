@@ -32,14 +32,15 @@ export class Tasks {
           refunded: result.refunded,
         });
       }
-      if (performance.now() >= deadline) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
         throw new TaskTimeoutError(
           `Task ${taskId} still processing after ${timeout}ms; ` +
             "it may finish later — resume with tasks.wait or tasks.get",
           taskId,
         );
       }
-      await sleep(pollInterval);
+      await sleep(Math.min(pollInterval, remaining));
     }
   }
 }
