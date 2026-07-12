@@ -59,4 +59,12 @@ describe("textToMusic.stream", () => {
     }
     expect(seen).toEqual([{ type: "error", code: "PROXY_ERROR", message: "boom" }]);
   });
+
+  it("does not attach an absolute abort signal, even with a client timeout configured", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    for await (const _ev of client.textToMusic.stream({ prompt: "p", duration: 10 })) {
+      // drain
+    }
+    expect(calls[0]!.init.signal).toBeUndefined();
+  });
 });

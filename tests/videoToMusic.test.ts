@@ -54,4 +54,12 @@ describe("videoToMusic.stream", () => {
     }
     expect(types).toEqual(["audio_chunk", "complete"]);
   });
+
+  it("does not attach an absolute abort signal, even with a client timeout configured", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    for await (const _ev of client.videoToMusic.stream({ videoUrl: "https://example.com/v.mp4" })) {
+      // drain
+    }
+    expect(calls[0]!.init.signal).toBeUndefined();
+  });
 });

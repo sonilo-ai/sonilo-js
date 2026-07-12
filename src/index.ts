@@ -6,6 +6,7 @@ export {
   GenerationError,
   PaymentRequiredError,
   RateLimitError,
+  RequestTimeoutError,
   SoniloError,
   TaskFailedError,
   TaskTimeoutError,

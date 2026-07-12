@@ -74,6 +74,21 @@ export class TaskTimeoutError extends SoniloError {
   }
 }
 
+/** Raised when a one-shot request or download is aborted by its own timeout
+ * signal (as opposed to a caller-supplied AbortSignal, which propagates
+ * untouched). */
+export class RequestTimeoutError extends SoniloError {}
+
+/**
+ * True if `err` is the rejection produced when an `AbortSignal.timeout()`
+ * we created fires. Used to distinguish "our" timeout aborts (which should be
+ * rethrown as `RequestTimeoutError`) from a caller-supplied signal's abort
+ * (which must propagate untouched).
+ */
+export function isTimeoutSignalError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
 export async function errorFromResponse(res: Response): Promise<APIError> {
   const text = await res.text().catch(() => "");
   let body: unknown = text;

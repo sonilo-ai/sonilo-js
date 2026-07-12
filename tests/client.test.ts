@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SoniloClient } from "../src/client.js";
-import { AuthenticationError, SoniloError } from "../src/errors.js";
+import { AuthenticationError, RequestTimeoutError, SoniloError } from "../src/errors.js";
 import { VERSION } from "../src/version.js";
-import { mockClient } from "./helpers.js";
+import { mockClient, neverResolvingFetch } from "./helpers.js";
 
 const ORIGINAL_ENV_KEY = process.env.SONILO_API_KEY;
 
@@ -81,5 +81,32 @@ describe("request", () => {
     const controller = new AbortController();
     await client.request("/v1/account/services", { signal: controller.signal });
     expect(calls[0]!.init.signal).toBe(controller.signal);
+  });
+
+  it("rejects with RequestTimeoutError when the client's own timeout fires", async () => {
+    const client = new SoniloClient({
+      apiKey: "sk_test_123",
+      timeout: 5,
+      fetch: neverResolvingFetch(),
+    });
+    await expect(client.tasks.get("t1")).rejects.toBeInstanceOf(RequestTimeoutError);
+  });
+
+  it("propagates a caller-supplied signal's abort without rewrapping it", async () => {
+    const client = new SoniloClient({
+      apiKey: "sk_test_123",
+      timeout: 5,
+      fetch: neverResolvingFetch(),
+    });
+    const controller = new AbortController();
+    const promise = client.request("/v1/account/services", { signal: controller.signal });
+    controller.abort();
+    await expect(promise).rejects.not.toBeInstanceOf(RequestTimeoutError);
+  });
+
+  it("does not attach an abort signal when the caller opts out (timeout: null)", async () => {
+    const { client, calls } = mockClient(() => new Response("{}", { status: 200 }));
+    await client.request("/v1/account/services", {}, { timeout: null });
+    expect(calls[0]!.init.signal).toBeUndefined();
   });
 });

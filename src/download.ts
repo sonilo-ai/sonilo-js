@@ -1,5 +1,5 @@
 import { DEFAULT_TIMEOUT_MS } from "./client.js";
-import { SoniloError } from "./errors.js";
+import { RequestTimeoutError, SoniloError, isTimeoutSignalError } from "./errors.js";
 import type { SfxMedia } from "./types.js";
 
 /** Fetch a result media file. The URL is presigned — no API key is sent. */
@@ -11,7 +11,15 @@ export async function download(
   if (!media?.url) {
     throw new SoniloError("No media to download");
   }
-  const res = await fetchFn(media.url, { signal: AbortSignal.timeout(timeout) });
+  let res: Response;
+  try {
+    res = await fetchFn(media.url, { signal: AbortSignal.timeout(timeout) });
+  } catch (err) {
+    if (isTimeoutSignalError(err)) {
+      throw new RequestTimeoutError(`Download of ${media.url} timed out after ${timeout}ms`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     throw new SoniloError(`Download failed: HTTP ${res.status}`);
   }

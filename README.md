@@ -36,6 +36,25 @@ const track = await sonilo.videoToMusic.generate({
 await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" });
 ```
 
+## Configuration
+
+```ts
+const client = new SoniloClient({
+  apiKey: "sk_...", // defaults to SONILO_API_KEY
+  baseUrl: "https://api.sonilo.com",
+  timeout: 600_000, // milliseconds, default 600000 (10 minutes)
+});
+```
+
+`timeout` bounds one-shot requests (account, tasks, SFX submits) and
+`download()` — it protects against a stalled connection hanging forever.
+It does **not** bound streaming music generation
+(`textToMusic`/`videoToMusic` `.stream()`/`.generate()`): those hold the
+response body open for as long as generation takes, so an absolute timeout
+would kill a healthy long-running stream. Use `tasks.wait()`'s own
+`timeout` option (or an `AbortController` you pass in yourself) to bound
+those instead.
+
 ## Streaming
 
 ```ts
@@ -109,8 +128,12 @@ All errors extend `SoniloError`: `AuthenticationError` (401),
 `PaymentRequiredError` (402), `RateLimitError` (429, `.retryAfter`),
 `BadRequestError` (400/413/422, `.detail`), `APIError` (anything else),
 `GenerationError` for failures mid-stream, `TaskFailedError` (`.code`,
-`.taskId`, `.refunded`) for a failed SFX task, and `TaskTimeoutError`
-(`.taskId`) when `tasks.wait()` / `generate()` hits its deadline.
+`.taskId`, `.refunded`) for a failed SFX task, `TaskTimeoutError`
+(`.taskId`) when `tasks.wait()` / `generate()` hits its deadline, and
+`RequestTimeoutError` when a one-shot request or `download()` is aborted
+by its own `timeout` (a caller-supplied `AbortSignal` is never rewrapped
+this way, and streaming music generation is never subject to this timeout
+at all).
 
 ## License
 

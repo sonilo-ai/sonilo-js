@@ -14,10 +14,15 @@ export class TextToMusic {
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
-    const res = await this.client.request("/v1/text-to-music", {
-      method: "POST",
-      body: form,
-    });
+    // Opt out of the client's absolute request timeout: this holds the
+    // response body open and reads NDJSON chunks for as long as generation
+    // takes, so an AbortSignal keyed to elapsed time would kill a healthy,
+    // still-streaming, long-duration track.
+    const res = await this.client.request(
+      "/v1/text-to-music",
+      { method: "POST", body: form },
+      { timeout: null },
+    );
     if (!res.body) throw new SoniloError("Response has no body");
     yield* parseNdjson(res.body);
   }

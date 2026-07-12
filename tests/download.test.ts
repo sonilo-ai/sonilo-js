@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_TIMEOUT_MS } from "../src/client.js";
 import { download } from "../src/download.js";
-import { SoniloError } from "../src/errors.js";
+import { RequestTimeoutError, SoniloError } from "../src/errors.js";
+import { neverResolvingFetch } from "./helpers.js";
 
 describe("download", () => {
   it("fetches the presigned URL without auth headers", async () => {
@@ -62,5 +63,11 @@ describe("download", () => {
 
   it("exports a 600s default timeout", () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(600_000);
+  });
+
+  it("rejects with RequestTimeoutError when the timeout fires", async () => {
+    await expect(
+      download({ url: "https://r2.example.com/a.m4a" }, neverResolvingFetch(), 5),
+    ).rejects.toBeInstanceOf(RequestTimeoutError);
   });
 });
