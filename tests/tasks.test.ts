@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TaskFailedError, TaskTimeoutError } from "../src/errors.js";
+import { SoniloError, TaskFailedError, TaskTimeoutError } from "../src/errors.js";
 import { mockClient } from "./helpers.js";
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -70,6 +70,19 @@ describe("tasks.wait", () => {
     await expect(
       client.tasks.wait("t1", { pollInterval: 0, timeout: 0 }),
     ).rejects.toBeInstanceOf(TaskTimeoutError);
+  });
+
+  it("rejects a negative pollInterval or timeout before polling", async () => {
+    // A negative delay is clamped to 0 by setTimeout, which would busy-loop
+    // against the API until the deadline instead of failing fast.
+    const { client, calls } = mockClient(() => jsonResponse(PROCESSING));
+    await expect(
+      client.tasks.wait("t1", { pollInterval: -1000, timeout: 200 }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    await expect(client.tasks.wait("t1", { timeout: -1 })).rejects.toBeInstanceOf(
+      SoniloError,
+    );
+    expect(calls.length).toBe(0);
   });
 
   it("clamps the poll sleep to the remaining deadline instead of sleeping the full interval", async () => {
