@@ -77,6 +77,11 @@ export interface TextToMusicParams {
   prompt: string;
   duration: number;
   segments?: Segment[];
+  /** Bounds the stream: aborting this cancels the in-flight generation.
+   * Passed straight through to `fetch` — it is never rewrapped as
+   * RequestTimeoutError, since the client's own absolute timeout does not
+   * apply to streaming music generation. */
+  signal?: AbortSignal;
 }
 
 /** string = file path (Node.js only). */
@@ -93,6 +98,11 @@ export interface VideoToMusicParams {
   videoUrl?: string;
   prompt?: string;
   segments?: Segment[];
+  /** Bounds the stream: aborting this cancels the in-flight generation.
+   * Passed straight through to `fetch` — it is never rewrapped as
+   * RequestTimeoutError, since the client's own absolute timeout does not
+   * apply to streaming music generation. */
+  signal?: AbortSignal;
 }
 
 export interface AccountServices {

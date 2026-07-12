@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { SoniloClient } from "../src/client.js";
+import { RequestTimeoutError } from "../src/errors.js";
 import type { StreamEvent } from "../src/types.js";
-import { b64, mockClient, ndjsonResponse } from "./helpers.js";
+import { b64, mockClient, ndjsonResponse, neverResolvingFetch } from "./helpers.js";
 
 const EVENTS = [
   { type: "title", title: "Skyline" },
@@ -66,5 +68,34 @@ describe("textToMusic.stream", () => {
       // drain
     }
     expect(calls[0]!.init.signal).toBeUndefined();
+  });
+
+  it("forwards a caller-supplied signal straight through to fetch, unrewrapped", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    const controller = new AbortController();
+    for await (const _ev of client.textToMusic.stream({
+      prompt: "p",
+      duration: 10,
+      signal: controller.signal,
+    })) {
+      // drain
+    }
+    expect(calls[0]!.init.signal).toBe(controller.signal);
+  });
+
+  it("propagates a caller-supplied signal's abort without rewrapping it as RequestTimeoutError", async () => {
+    const client = new SoniloClient({
+      apiKey: "sk_test_123",
+      timeout: 5, // tiny client timeout; must not apply to the stream anyway
+      fetch: neverResolvingFetch(),
+    });
+    const controller = new AbortController();
+    const promise = client.textToMusic.generate({
+      prompt: "p",
+      duration: 10,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(promise).rejects.not.toBeInstanceOf(RequestTimeoutError);
   });
 });

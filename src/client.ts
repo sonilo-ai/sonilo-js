@@ -77,7 +77,7 @@ export class SoniloClient {
     // We only "own" the signal (and may later rewrap its abort as a
     // RequestTimeoutError) when the caller didn't supply one and a timeout
     // is actually enabled.
-    const ownsSignal = init.signal === undefined && timeout !== null;
+    const ownsSignal = init.signal == null && timeout !== null;
     const signal = init.signal ?? (timeout === null ? undefined : AbortSignal.timeout(timeout));
     try {
       const res = await this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers, signal });

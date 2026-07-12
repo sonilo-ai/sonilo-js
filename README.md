@@ -51,9 +51,11 @@ const client = new SoniloClient({
 It does **not** bound streaming music generation
 (`textToMusic`/`videoToMusic` `.stream()`/`.generate()`): those hold the
 response body open for as long as generation takes, so an absolute timeout
-would kill a healthy long-running stream. Use `tasks.wait()`'s own
-`timeout` option (or an `AbortController` you pass in yourself) to bound
-those instead.
+would kill a healthy long-running stream. Pass your own `signal` in
+`TextToMusicParams`/`VideoToMusicParams` (e.g. from an `AbortController`,
+or `AbortSignal.timeout(ms)` for an absolute cap) to bound or cancel a
+music stream instead — it's forwarded to `fetch` as-is and never
+rewrapped as `RequestTimeoutError`.
 
 ## Streaming
 

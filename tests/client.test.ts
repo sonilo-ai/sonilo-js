@@ -109,4 +109,18 @@ describe("request", () => {
     await client.request("/v1/account/services", {}, { timeout: null });
     expect(calls[0]!.init.signal).toBeUndefined();
   });
+
+  it("rejects with RequestTimeoutError when the client's own timeout fires, even for an explicit signal: null", async () => {
+    // signal: null is nullish for `??`, so the client attaches its own
+    // timeout signal; `ownsSignal` must recognize that with the same loose
+    // check, or the raw DOMException leaks instead of RequestTimeoutError.
+    const client = new SoniloClient({
+      apiKey: "sk_test_123",
+      timeout: 5,
+      fetch: neverResolvingFetch(),
+    });
+    await expect(client.request("/v1/account/services", { signal: null })).rejects.toBeInstanceOf(
+      RequestTimeoutError,
+    );
+  });
 });

@@ -62,4 +62,16 @@ describe("videoToMusic.stream", () => {
     }
     expect(calls[0]!.init.signal).toBeUndefined();
   });
+
+  it("forwards a caller-supplied signal straight through to fetch, unrewrapped", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    const controller = new AbortController();
+    for await (const _ev of client.videoToMusic.stream({
+      videoUrl: "https://example.com/v.mp4",
+      signal: controller.signal,
+    })) {
+      // drain
+    }
+    expect(calls[0]!.init.signal).toBe(controller.signal);
+  });
 });
