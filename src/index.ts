@@ -7,7 +7,10 @@ export {
   PaymentRequiredError,
   RateLimitError,
   SoniloError,
+  TaskFailedError,
+  TaskTimeoutError,
 } from "./errors.js";
+export { download } from "./download.js";
 export { VERSION } from "./version.js";
 export type {
   AccountServices,
@@ -19,8 +22,15 @@ export type {
   ErrorEvent,
   Segment,
   SegmentLabel,
+  SfxAudioFormat,
+  SfxError,
+  SfxMedia,
+  SfxResult,
+  SfxSegment,
+  SfxTask,
   StreamEvent,
   TextToMusicParams,
+  TextToSfxParams,
   TitleEvent,
   Track,
   UnknownEvent,
@@ -28,5 +38,7 @@ export type {
   UsageSummary,
   VideoInput,
   VideoToMusicParams,
+  VideoToSfxParams,
+  WaitOptions,
 } from "./types.js";
 export { isAudioChunkEvent, isErrorEvent } from "./types.js";

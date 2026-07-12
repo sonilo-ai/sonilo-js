@@ -46,6 +46,34 @@ export class GenerationError extends SoniloError {
   }
 }
 
+/** Raised by tasks.wait()/generate() when an SFX task reaches `failed`. */
+export class TaskFailedError extends SoniloError {
+  readonly code?: string;
+  readonly taskId: string;
+  readonly refunded?: boolean;
+
+  constructor(
+    message: string,
+    opts: { code?: string; taskId: string; refunded?: boolean },
+  ) {
+    super(message);
+    this.code = opts.code;
+    this.taskId = opts.taskId;
+    this.refunded = opts.refunded;
+  }
+}
+
+/** Poll deadline passed. The task may still finish server-side — resume with
+ * tasks.wait(taskId) or tasks.get(taskId). */
+export class TaskTimeoutError extends SoniloError {
+  readonly taskId: string;
+
+  constructor(message: string, taskId: string) {
+    super(message);
+    this.taskId = taskId;
+  }
+}
+
 export async function errorFromResponse(res: Response): Promise<APIError> {
   const text = await res.text().catch(() => "");
   let body: unknown = text;
