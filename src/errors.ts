@@ -8,11 +8,18 @@ export class SoniloError extends Error {
 export class APIError extends SoniloError {
   readonly status: number;
   readonly body: unknown;
+  /** The API's typed error code (e.g. "rate_limit_exceeded"), distinct from the HTTP status. */
+  readonly code?: string;
+  /** Per-field validation details, present on a 422. */
+  readonly errors?: unknown[];
 
   constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.status = status;
     this.body = body;
+    const parsed = body as { code?: unknown; errors?: unknown } | undefined;
+    this.code = typeof parsed?.code === "string" ? parsed.code : undefined;
+    this.errors = Array.isArray(parsed?.errors) ? parsed.errors : undefined;
   }
 }
 
@@ -22,7 +29,10 @@ export class PaymentRequiredError extends APIError {}
 
 export class BadRequestError extends APIError {
   get detail(): string | undefined {
-    const body = this.body as { detail?: unknown } | undefined;
+    const body = this.body as { message?: unknown; detail?: unknown } | undefined;
+    if (typeof body?.message === "string" && body.message) {
+      return body.message;
+    }
     return typeof body?.detail === "string" ? body.detail : undefined;
   }
 }
@@ -46,6 +56,49 @@ export class GenerationError extends SoniloError {
   }
 }
 
+/** Raised by tasks.wait()/generate() when an SFX task reaches `failed`. */
+export class TaskFailedError extends SoniloError {
+  readonly code?: string;
+  readonly taskId: string;
+  readonly refunded?: boolean;
+
+  constructor(
+    message: string,
+    opts: { code?: string; taskId: string; refunded?: boolean },
+  ) {
+    super(message);
+    this.code = opts.code;
+    this.taskId = opts.taskId;
+    this.refunded = opts.refunded;
+  }
+}
+
+/** Poll deadline passed. The task may still finish server-side — resume with
+ * tasks.wait(taskId) or tasks.get(taskId). */
+export class TaskTimeoutError extends SoniloError {
+  readonly taskId: string;
+
+  constructor(message: string, taskId: string) {
+    super(message);
+    this.taskId = taskId;
+  }
+}
+
+/** Raised when a one-shot request or download is aborted by its own timeout
+ * signal (as opposed to a caller-supplied AbortSignal, which propagates
+ * untouched). */
+export class RequestTimeoutError extends SoniloError {}
+
+/**
+ * True if `err` is the rejection produced when an `AbortSignal.timeout()`
+ * we created fires. Used to distinguish "our" timeout aborts (which should be
+ * rethrown as `RequestTimeoutError`) from a caller-supplied signal's abort
+ * (which must propagate untouched).
+ */
+export function isTimeoutSignalError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
 export async function errorFromResponse(res: Response): Promise<APIError> {
   const text = await res.text().catch(() => "");
   let body: unknown = text;
@@ -54,11 +107,25 @@ export async function errorFromResponse(res: Response): Promise<APIError> {
   } catch {
     // keep raw text
   }
-  const detail =
-    typeof (body as { detail?: unknown })?.detail === "string"
-      ? (body as { detail: string }).detail
-      : res.statusText || "request failed";
-  const message = `HTTP ${res.status}: ${detail}`;
+  const parsed = body as { message?: unknown; detail?: unknown } | undefined;
+  const rawMessage = typeof parsed?.message === "string" && parsed.message ? parsed.message : undefined;
+  const rawDetail = parsed?.detail;
+  const isDetailAbsent = rawDetail === undefined || rawDetail === null || rawDetail === "";
+  let reason: string;
+  if (rawMessage !== undefined) {
+    reason = rawMessage;
+  } else if (isDetailAbsent) {
+    reason = res.statusText || "request failed";
+  } else if (typeof rawDetail === "string") {
+    reason = rawDetail;
+  } else {
+    try {
+      reason = JSON.stringify(rawDetail);
+    } catch {
+      reason = res.statusText || "request failed";
+    }
+  }
+  const message = `HTTP ${res.status}: ${reason}`;
 
   switch (res.status) {
     case 401:

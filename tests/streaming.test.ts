@@ -79,6 +79,12 @@ describe("parseNdjson", () => {
     expect(events).toEqual([{ type: "stage_start", stage: "analyze" }]);
   });
 
+  it("skips a bare `null` line instead of throwing a raw TypeError", async () => {
+    const text = "null\n" + JSON.stringify({ type: "complete" }) + "\n";
+    const events = await collect(chunkedStream(text, 4));
+    expect(events).toEqual([{ type: "complete" }]);
+  });
+
   it("cancels the source stream when the consumer stops early", async () => {
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -104,6 +110,33 @@ describe("parseNdjson", () => {
     expect(chunks).toHaveLength(2);
     expect(chunks[0]!.data).toBeInstanceOf(Uint8Array);
     expect(events.filter(isErrorEvent)).toHaveLength(0);
+  });
+
+  it("yields an undecodable audio_chunk with its original string data instead of throwing", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "not-valid-base64!!!" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const events = await collect(chunkedStream(text, 9));
+    const chunk = events.find((e) => e.type === "audio_chunk") as AudioChunkEvent;
+    expect(chunk.data).toBe("not-valid-base64!!!");
+  });
+
+  it("decodes an empty-string audio_chunk to a zero-length Uint8Array", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const events = await collect(chunkedStream(text, 9));
+    const chunk = events.find((e) => e.type === "audio_chunk") as AudioChunkEvent;
+    expect(chunk.data).toBeInstanceOf(Uint8Array);
+    expect((chunk.data as Uint8Array).length).toBe(0);
   });
 });
 
@@ -161,6 +194,42 @@ describe("collectTrack", () => {
     }).rejects.toBeInstanceOf(GenerationError);
   });
 
+  it("throws GenerationError with default message on empty-string error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: "" }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on missing error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR" }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on null error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: null }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
+  it("throws GenerationError with default message on non-string error message", async () => {
+    const text = JSON.stringify({ type: "error", code: "TEST_ERROR", message: 12345 }) + "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
+      name: "GenerationError",
+      code: "TEST_ERROR",
+      message: "generation failed",
+    });
+  });
+
   it("throws GenerationError when the stream ends without a complete event", async () => {
     const text = JSON.stringify({ type: "audio_chunk", data: b64("half") }) + "\n";
     await expect(collectTrack(parseNdjson(chunkedStream(text, 100)))).rejects.toMatchObject({
@@ -170,5 +239,57 @@ describe("collectTrack", () => {
 
   it("throws GenerationError on an entirely empty stream", async () => {
     await expect(collectTrack(parseNdjson(chunkedStream("", 1)))).rejects.toBeInstanceOf(GenerationError);
+  });
+
+  it("throws GenerationError instead of silently dropping an audio_chunk with missing data", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
+  });
+
+  it("throws GenerationError instead of silently dropping an audio_chunk with non-string data", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: 12345 }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
+  });
+
+  it("throws GenerationError (not a raw DOMException) when audio_chunk data fails base64 decoding", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "not-valid-base64!!!" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    await expect(collectTrack(parseNdjson(chunkedStream(text, 9)))).rejects.toBeInstanceOf(
+      GenerationError,
+    );
+  });
+
+  it("still decodes an empty-string audio_chunk to a zero-length track without raising", async () => {
+    const text =
+      JSON.stringify({ type: "title", title: "Skyline" }) +
+      "\n" +
+      JSON.stringify({ type: "audio_chunk", data: "" }) +
+      "\n" +
+      JSON.stringify({ type: "complete" }) +
+      "\n";
+    const track = await collectTrack(parseNdjson(chunkedStream(text, 9)));
+    expect(track.audio).toBeInstanceOf(Uint8Array);
+    expect(track.audio.length).toBe(0);
   });
 });

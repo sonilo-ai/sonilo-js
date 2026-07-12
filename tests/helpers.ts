@@ -42,3 +42,23 @@ export function ndjsonResponse(events: unknown[], chunkSize?: number): Response 
 export function b64(s: string): string {
   return btoa(s);
 }
+
+/**
+ * A fetch stub that never resolves on its own, but rejects with the same
+ * DOMException `AbortSignal.timeout()` produces when `init.signal` fires.
+ * Lets tests exercise real timeout behavior deterministically (paired with a
+ * tiny client `timeout`) without ever waiting out a real multi-minute abort.
+ */
+export function neverResolvingFetch(): typeof globalThis.fetch {
+  return (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      const onAbort = () => reject(new DOMException("The signal has timed out", "TimeoutError"));
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort);
+    });
+  }) as typeof globalThis.fetch;
+}

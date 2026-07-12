@@ -36,6 +36,27 @@ const track = await sonilo.videoToMusic.generate({
 await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" });
 ```
 
+## Configuration
+
+```ts
+const client = new SoniloClient({
+  apiKey: "sk_...", // defaults to SONILO_API_KEY
+  baseUrl: "https://api.sonilo.com",
+  timeout: 600_000, // milliseconds, default 600000 (10 minutes)
+});
+```
+
+`timeout` bounds one-shot requests (account, tasks, SFX submits) and
+`download()` — it protects against a stalled connection hanging forever.
+It does **not** bound streaming music generation
+(`textToMusic`/`videoToMusic` `.stream()`/`.generate()`): those hold the
+response body open for as long as generation takes, so an absolute timeout
+would kill a healthy long-running stream. Pass your own `signal` in
+`TextToMusicParams`/`VideoToMusicParams` (e.g. from an `AbortController`,
+or `AbortSignal.timeout(ms)` for an absolute cap) to bound or cancel a
+music stream instead — it's forwarded to `fetch` as-is and never
+rewrapped as `RequestTimeoutError`.
+
 ## Streaming
 
 ```ts
@@ -65,6 +86,37 @@ await sonilo.textToMusic.generate({
 });
 ```
 
+## Sound effects (async tasks)
+
+SFX endpoints are asynchronous: submitting returns a `task_id`, and the result
+is fetched by polling. `generate()` wraps submit + poll:
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+const result = await client.textToSfx.generate({ prompt: "glass shattering", duration: 5 });
+await writeFile("sfx.m4a", await download(result.audio));
+```
+
+Or control polling yourself:
+
+```ts
+const task = await client.videoToSfx.submit({
+  video: "clip.mp4", // Node.js path; pass File/Blob in the browser
+  segments: [{ start: 0, end: 2.5, prompt: "footsteps on gravel" }],
+  audioFormat: "wav",
+});
+const result = await client.tasks.wait(task.task_id, { pollInterval: 2000, timeout: 600000 });
+```
+
+`tasks.get(taskId)` fetches state once and never throws on a failed task;
+`tasks.wait()` / `generate()` throw `TaskFailedError` (with `.code`,
+`.refunded`) on failure and `TaskTimeoutError` if the deadline passes — the
+task keeps running server-side and can still be polled afterwards. Result URLs
+are presigned and expire; download promptly or re-fetch via `tasks.get`.
+
 ## Account
 
 ```ts
@@ -77,8 +129,15 @@ const usage = await sonilo.account.usage({ days: 7 });
 All errors extend `SoniloError`: `AuthenticationError` (401),
 `PaymentRequiredError` (402), `RateLimitError` (429, `.retryAfter`),
 `BadRequestError` (400/413/422, `.detail`), `APIError` (anything else),
-and `GenerationError` for failures mid-stream.
+`GenerationError` for failures mid-stream, `TaskFailedError` (`.code`,
+`.taskId`, `.refunded`) for a failed SFX task, `TaskTimeoutError`
+(`.taskId`) when `tasks.wait()` / `generate()` hits its deadline, and
+`RequestTimeoutError` when a one-shot request or `download()` is aborted
+by its own `timeout` (a caller-supplied `AbortSignal` is never rewrapped
+this way, and streaming music generation is never subject to this timeout
+at all).
 
-## License
-
-MIT
+Every `APIError` also carries `.status`, `.body` (the parsed response),
+`.code` (the API's error code, e.g. `"rate_limit_exceeded"`), and `.errors`
+(the validation detail array on a 422), in addition to any subclass-specific
+properties above.

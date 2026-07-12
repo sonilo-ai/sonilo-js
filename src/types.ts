@@ -77,6 +77,11 @@ export interface TextToMusicParams {
   prompt: string;
   duration: number;
   segments?: Segment[];
+  /** Bounds the stream: aborting this cancels the in-flight generation.
+   * Passed straight through to `fetch` — it is never rewrapped as
+   * RequestTimeoutError, since the client's own absolute timeout does not
+   * apply to streaming music generation. */
+  signal?: AbortSignal;
 }
 
 /** string = file path (Node.js only). */
@@ -93,6 +98,11 @@ export interface VideoToMusicParams {
   videoUrl?: string;
   prompt?: string;
   segments?: Segment[];
+  /** Bounds the stream: aborting this cancels the in-flight generation.
+   * Passed straight through to `fetch` — it is never rewrapped as
+   * RequestTimeoutError, since the client's own absolute timeout does not
+   * apply to streaming music generation. */
+  signal?: AbortSignal;
 }
 
 export interface AccountServices {
@@ -130,4 +140,67 @@ export function isAudioChunkEvent(event: StreamEvent): event is AudioChunkEvent 
 
 export function isErrorEvent(event: StreamEvent): event is ErrorEvent {
   return event.type === "error";
+}
+
+/** SFX segments (unlike music `Segment`) require `end`, must start at 0,
+ * and be contiguous; validated server-side. */
+export interface SfxSegment {
+  start: number;
+  end: number;
+  prompt: string;
+}
+
+export type SfxAudioFormat = "wav" | "mp3" | "aac" | "flac";
+
+/** Submission ack for the async SFX endpoints. */
+export interface SfxTask {
+  task_id: string;
+  status: string;
+}
+
+/** A generated file re-hosted on R2 behind a presigned URL. */
+export interface SfxMedia {
+  url: string;
+  content_type?: string;
+  file_size?: number;
+}
+
+export interface SfxError {
+  code?: string;
+  message?: string;
+}
+
+/** State of an SFX task (`tasks.get`) or its final result (`wait`/`generate`). */
+export interface SfxResult {
+  task_id: string;
+  type?: string;
+  status: "processing" | "succeeded" | "failed" | (string & {});
+  audio?: SfxMedia;
+  video?: SfxMedia;
+  /** Only present when the account's task-field whitelist enables cost. */
+  cost?: number;
+  error?: SfxError;
+  refunded?: boolean;
+  [key: string]: unknown;
+}
+
+export interface TextToSfxParams {
+  prompt: string;
+  duration: number;
+  audioFormat?: SfxAudioFormat;
+}
+
+export interface VideoToSfxParams {
+  video?: VideoInput;
+  videoUrl?: string;
+  prompt?: string;
+  segments?: SfxSegment[];
+  audioFormat?: SfxAudioFormat;
+}
+
+export interface WaitOptions {
+  /** Milliseconds between polls. Default 2000. */
+  pollInterval?: number;
+  /** Overall deadline in milliseconds. Default 600000. */
+  timeout?: number;
 }

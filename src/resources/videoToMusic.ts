@@ -22,10 +22,17 @@ export class VideoToMusic {
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
-    const res = await this.client.request("/v1/video-to-music", {
-      method: "POST",
-      body: form,
-    });
+    // Opt out of the client's absolute request timeout: this holds the
+    // response body open and reads NDJSON chunks for as long as generation
+    // takes, so an AbortSignal keyed to elapsed time would kill a healthy,
+    // still-streaming request (e.g. a slow video upload or long track). Pass
+    // `params.signal` yourself to bound or cancel the stream instead — it is
+    // forwarded to `fetch` as-is.
+    const res = await this.client.request(
+      "/v1/video-to-music",
+      { method: "POST", body: form, signal: params.signal },
+      { timeout: null },
+    );
     if (!res.body) throw new SoniloError("Response has no body");
     yield* parseNdjson(res.body);
   }
