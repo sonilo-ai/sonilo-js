@@ -25,3 +25,16 @@ export class FfmpegError extends VideoKitError {
     this.stderrTail = stderrTail;
   }
 }
+
+/** A ducking task the API accepted but could not finish. `refunded` reports
+ * whether the backend reversed the charge — surface it, never swallow it. */
+export class DuckingFailedError extends VideoKitError {
+  readonly code: string;
+  readonly refunded: boolean;
+
+  constructor(message: string, code: string, refunded: boolean) {
+    super(`Ducking failed [${code}]: ${message}${refunded ? " — the charge was refunded" : ""}`);
+    this.code = code;
+    this.refunded = refunded;
+  }
+}
