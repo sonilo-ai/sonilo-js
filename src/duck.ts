@@ -211,6 +211,13 @@ async function rescueAndThrow(
       `(e.g. retry the mux, or move the file into place yourself) instead of calling ` +
       `duckMusicUnderSpeech again, which would incur another charge.`;
   } catch (rescueErr) {
+    // copyFile itself isn't atomic: a failure partway through (most likely
+    // ENOSPC -- also the likely cause of the original failure) would
+    // otherwise leave a truncated, or previously-good-now-clobbered, file at
+    // recoveredPath, exactly the kind of half-written "deliverable" this
+    // whole rescue exists to prevent. Remove it rather than leave the user
+    // trusting a corrupt recovery file.
+    await rm(recoveredPath, { force: true }).catch(() => {});
     const rescueReason = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
     rescueNote =
       `Attempting to also save the ducked audio to ${recoveredPath} ALSO failed ` +

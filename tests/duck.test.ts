@@ -8,6 +8,36 @@ import { DuckingFailedError, VideoKitError } from "../src/errors.js";
 import { probeVideo } from "../src/ffmpeg.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
 
+/** Marker naming the one recovery path this suite deliberately corrupts, so
+ * the copyFile shim below can single it out and leave every other copyFile
+ * call (placeAtomically's temp-file copy, the normal rescue copy in the
+ * other tests, and anything the test file itself does) running against the
+ * real filesystem. */
+const PARTIAL_RESCUE_MARKER = "partial_rescue_probe";
+
+/** `fs.copyFile` can't be made to fail partway through on demand -- there's
+ * no portable way to force ENOSPC mid-stream in a test. To prove the
+ * cleanup in `rescueAndThrow`'s catch block actually removes a partial/
+ * clobbered recovery file, this shim intercepts only the one copyFile call
+ * whose destination carries PARTIAL_RESCUE_MARKER, writes a short "partial"
+ * file to simulate a copy that died partway through, and rejects -- exactly
+ * the shape a real ENOSPC failure would leave behind. Every other copyFile
+ * call (identified by not carrying the marker) is forwarded to the real
+ * implementation, so this does not weaken any other test in the file. */
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    copyFile: vi.fn(async (src: Parameters<typeof actual.copyFile>[0], dest: Parameters<typeof actual.copyFile>[1], ...rest: unknown[]) => {
+      if (typeof dest === "string" && dest.includes(PARTIAL_RESCUE_MARKER)) {
+        await actual.writeFile(dest, "PARTIAL-DATA-FROM-A-FAILED-COPY");
+        throw new Error("simulated ENOSPC partway through the rescue copy");
+      }
+      return (actual.copyFile as (...a: unknown[]) => Promise<void>)(src, dest, ...rest);
+    }),
+  };
+});
+
 /** Stub client: 202 on submit, then one `succeeded` poll. Records every call. */
 function stubClient(taskBody: Record<string, unknown> = {
   status: "succeeded",
@@ -339,5 +369,44 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
 
     expect(await exists(output)).toBe(false);
     expect(await exists(recoveredPath)).toBe(false); // rescue genuinely failed -- nothing was written there
+  });
+
+  it("removes a partial recovery file left by a rescue copy that fails partway through", async () => {
+    // Same shape as "already_a_directory" above -- output pre-exists as a
+    // directory, so the mux succeeds and only the rename in placeAtomically
+    // fails (EISDIR) -- but this output's name carries
+    // PARTIAL_RESCUE_MARKER, so the copyFile shim at the top of this file
+    // intercepts the *rescue* copy specifically: instead of a clean ENOENT/
+    // EISDIR, it writes a short garbage file to recoveredPath and then
+    // rejects, standing in for a real copyFile that died partway through
+    // (e.g. ENOSPC). That's exactly the case finding 3b covers: the rescue
+    // catch block must remove whatever partial bytes landed at
+    // recoveredPath, not leave a corrupt file sitting at a path the error
+    // message tells the user to trust.
+    const output = join(dir, `${PARTIAL_RESCUE_MARKER}.mp4`);
+    await mkdir(output);
+    const recoveredPath = `${output}.ducked.wav`;
+    const { client } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).toContain("Placing the finished mix at"); // mux succeeded; placement failed
+    expect(message).toContain("ALSO failed"); // the simulated rescue failure ran
+    expect(message).toMatch(/charge/i);
+    expect(message).toContain(recoveredPath);
+
+    // The load-bearing assertion: without the fix, the shim's partial write
+    // survives at recoveredPath even though the rescue "failed". With the
+    // fix, rescueAndThrow's catch block removes it before rethrowing.
+    expect(await exists(recoveredPath)).toBe(false);
   });
 });
