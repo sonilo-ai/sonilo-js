@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DuckingClient } from "../src/ducking-api.js";
 import { duckMusicUnderSpeech, MAX_DUCKING_DURATION_SECONDS } from "../src/duck.js";
 import { DuckingFailedError, VideoKitError } from "../src/errors.js";
@@ -130,6 +130,21 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
 
     expect(err).toBeInstanceOf(DuckingFailedError);
     expect((err as DuckingFailedError).refunded).toBe(true);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("reports the video error, not a missing-API-key error, when no client is given and SONILO_API_KEY is unset", async () => {
+    vi.stubEnv("SONILO_API_KEY", "");
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoSilent,
+        audio: fx.musicMp3,
+        output: join(dir, "never_no_client.mp4"),
+      }),
+    ).rejects.toThrow(/no audio track/);
   });
 
   it("validates its arguments", async () => {
