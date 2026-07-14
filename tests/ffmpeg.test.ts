@@ -53,6 +53,20 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
   });
 });
 
+/** Probe the AUDIO stream's own duration (not the container's format.duration,
+ * which stays pinned to the untouched, copied video track and can't detect a
+ * short-changed audio stream). */
+async function probeAudioStreamDuration(path: string, ffprobePath: string): Promise<number> {
+  const { stdout } = await runProcess(ffprobePath, [
+    "-v", "error",
+    "-select_streams", "a:0",
+    "-show_entries", "stream=duration",
+    "-of", "default=noprint_wrappers=1:nokey=1",
+    path,
+  ]);
+  return Number(stdout.trim());
+}
+
 describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () => {
   let dir: string;
   let fx: Awaited<ReturnType<typeof makeFixtures>>;
@@ -86,6 +100,13 @@ describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () =>
     const probe = await probeVideo(output, "ffprobe");
     expect(probe.videoCodec).toBe("h264");
     expect(probe.durationSeconds).toBeGreaterThan(3.5);
+
+    // format.duration above is the container-level figure, dominated by the
+    // untouched, copied video track — it can't tell a padded audio track from
+    // a truncated one. Assert on the audio stream's own duration instead, so
+    // this test fails if the apad padding is ever removed.
+    const audioDuration = await probeAudioStreamDuration(output, "ffprobe");
+    expect(audioDuration).toBeGreaterThan(3.5);
   });
 });
 
