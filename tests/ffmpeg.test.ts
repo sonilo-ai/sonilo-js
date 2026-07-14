@@ -166,25 +166,91 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     // relationship to the container rather than on a frame-count cross-check.
     //
     // `ffmpeg -ss 2 -i in -c copy out.mp4` -- and every iPhone clip -- writes an
-    // EDIT LIST: all 250 coded frames of the 10 s source are retained, while the
+    // EDIT LIST: all 50 coded frames of the 10 s source are retained, while the
     // presentation is trimmed to 8 s. `-c:v copy` applies the edit list, so 8 s is
     // what the mux delivers and 8 s is the correct bill. The `duration` field says
     // 8 s and is RIGHT; `nb_frames / avg_frame_rate` says 10 s and is WRONG.
     // A cross-check that measured on that disagreement would bill 10 s for an 8 s
     // deliverable -- a 1.25x overbill on the commonest video there is.
-    const elst = join(dir, "edit_list.mp4");
-    await runProcess("ffmpeg", ["-y", "-v", "error", "-ss", "2", "-i", fx.videoAudioOutlivesPicture, "-c", "copy", elst]);
+    //
+    // Asserted against the ABSOLUTE truth (8 s, established by DECODING) rather
+    // than against the field: comparing the probe to the field is a tautology the
+    // moment the code returns the field, and it passed even while the 1.25x sat
+    // one check away. The number that must never appear here is 10.
+    const probe = await probeVideo(fx.videoEditList, "ffprobe");
+    expect(probe.videoDurationSeconds!).toBeCloseTo(8, 1); // the PRESENTED picture
+    expect(probe.videoDurationSeconds!).toBeLessThan(9); // NOT the 10 s of coded frames
 
-    const probe = await probeVideo(elst, "ffprobe");
-    const field = Number(
-      (await runProcess("ffprobe", [
+    // The teeth: the raw packet timestamps -- which is what tier 3 reads, and
+    // which do NOT have the edit list applied -- really do span 10 s (pts -2.000
+    // .. 8.000). So the 1.25x is genuinely available to be got wrong here; the
+    // code avoids it, and this proves the fixture can still catch it.
+    const pts = (await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "packet=pts_time", "-of", "csv=p=0", fx.videoEditList,
+    ])).stdout.split("\n").filter((l) => l.length > 0).map(Number).filter(Number.isFinite);
+    expect(Math.min(...pts)).toBeCloseTo(-2, 1); // frames the edit list DISCARDS
+    expect(Math.max(...pts) - Math.min(...pts)).toBeGreaterThan(9); // a 10 s raw span
+  });
+
+  it("probeVideo BILLS THE PICTURE for a FRAGMENTED MP4, whose duration field is measured from a PHANTOM start (both recipes)", async () => {
+    // BUG 1, AND THE ONLY BUG IN THIS FILE THAT *UNDER*BILLS -- which means it
+    // does not merely overcharge, it CUTS THE USER'S SPEECH OFF and hands them a
+    // truncated mix they paid for.
+    //
+    // With no moov to describe the track, libavformat takes the stream's
+    // `start_time` from the FIRST PACKET IN DECODE ORDER -- under B-pyramid, not
+    // the packet with the smallest pts. For a 10 s/1 fps fragmented MP4 it reports
+    // start_time=2.000000 while the picture's packets genuinely begin at pts
+    // 0.000061, and it derives `st->duration = packet_span - start_time` = 8.128.
+    //
+    // The field (8.13) is NOWHERE NEAR the container (30.13), so the
+    // looks-like-the-container's guard does not fire. Trusting it uploads 8.13 s
+    // of voice under a 10 s picture: billed 0.81x, and the last two seconds of
+    // speech are gone.
+    //
+    // BOTH recipes, because they defeat DIFFERENT signals and neither signal
+    // saves either file: +empty_moov reports nb_frames=N/A, plain +frag_keyframe
+    // reports nb_frames=10. Only asking where the picture's packets actually END
+    // catches both.
+    for (const [name, video] of [
+      ["empty_moov", fx.videoFragmentedEmptyMoov],
+      ["frag_keyframe", fx.videoFragmentedKeyframe],
+    ] as const) {
+      const probe = await probeVideo(video, "ffprobe");
+      // The picture DECODES to 10.00 s. Never the 8.13 s the field claims.
+      expect(probe.videoDurationSeconds!, name).toBeGreaterThan(9.5);
+      expect(probe.videoDurationSeconds!, name).toBeLessThan(11); // nor the container's 30 s
+
+      // The teeth: the field really does say ~8.13, and it really is far from the
+      // container's 30.13 -- so the old guard genuinely passed it through, and
+      // this fixture still catches a regression to it.
+      const field = Number((await runProcess("ffprobe", [
         "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", elst,
-      ])).stdout.trim(),
-    );
-    // Whatever the edit list trimmed it to, the picture's reported duration is
-    // the FIELD -- the edit-list-adjusted figure the mux will honour.
-    expect(probe.videoDurationSeconds!).toBeCloseTo(field, 1);
+        "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", video,
+      ])).stdout.trim());
+      expect(field, name).toBeLessThan(9); // the underbilling figure...
+      expect(Math.abs(field - probe.durationSeconds), name).toBeGreaterThan(5); // ...nowhere near the container
+    }
+  });
+
+  it("tier 3 MEASURES an edit-list mp4 correctly rather than relying on never being reached by one", async () => {
+    // BUG 2, latent but one check away from live. `measurePictureSpan` reads RAW
+    // packet timestamps, and those do NOT have the edit list applied: this file's
+    // pts run -2.000 .. 8.000, a span of 10.000, for a picture that presents 8.000.
+    // A `max - min` measurement bills 1.25x.
+    //
+    // Until now the ONLY thing keeping an edit-list mp4 out of tier 3 was an
+    // `nb_frames` presence check -- and `nb_frames` is absent on exactly the
+    // fragmented MP4s that tier 3 now measures. So tier 3 is hardened at the
+    // source: frames at negative pts are precisely the frames the edit list
+    // DISCARDS, so the measurement's origin is clamped at zero.
+    //
+    // Forced through tier 3 with the stripped ffprobe (no `duration` field, no
+    // DURATION tag), which is the one shape that reaches it unconditionally.
+    const probe = await probeVideo(fx.videoEditList, await fakeFfprobe(dir, {}));
+    expect(probe.videoDurationSeconds!).toBeCloseTo(8, 1); // MEASURED as presented
+    expect(probe.videoDurationSeconds!).toBeLessThan(9); // NOT the 10 s raw packet span
   });
 
   it("probeVideo MEASURES the picture when the container carries neither a duration field nor a DURATION tag", async () => {

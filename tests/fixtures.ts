@@ -28,6 +28,9 @@ export async function makeFixtures(dir: string): Promise<{
   videoSparsePictureMkv: string;
   videoSparsePictureTs: string;
   videoLongPictureLongerAudioMkv: string;
+  videoFragmentedEmptyMoov: string;
+  videoFragmentedKeyframe: string;
+  videoEditList: string;
   audioOnly: string;
   audioWithCoverArt: string;
   videoWithCoverArt: string;
@@ -182,6 +185,75 @@ export async function makeFixtures(dir: string): Promise<{
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
     videoLongPictureLongerAudioMkv,
   ]);
+  // THE FRAGMENTED-MP4 UNDERBILL. 10 s of picture at 1 fps under a 30 s audio
+  // track, written with ffmpeg's two documented fragmenting recipes. This is the
+  // shape that CUTS THE USER'S SPEECH OFF, and it is the dangerous direction:
+  // every other billing bug in this file overcharges, this one UNDERcharges and
+  // delivers a truncated mix.
+  //
+  // With no moov to describe the track, libavformat takes the stream's
+  // `start_time` from the FIRST PACKET IN DECODE ORDER, which under B-pyramid is
+  // not the packet with the smallest pts. It reports:
+  //
+  //   start_time=2.000000  duration=8.128052   <- the picture really runs 10 s
+  //   format.duration=30.128   (the audio's)   <- and its packets start at pts 0.000061
+  //
+  // because it computes `st->duration` as `packet_span - start_time`, subtracting
+  // a start that is a PHANTOM. The field (8.13) is nowhere near the container
+  // (30.13), so the looks-like-the-container's guard does NOT fire and the field
+  // is trusted: 8.13 s of voice is uploaded under a 10 s picture, the customer is
+  // billed 0.81x, and THE LAST TWO SECONDS OF THEIR SPEECH ARE GONE. The error is
+  // `2/fps`, so it bites hardest at low frame rates -- an OBS "fragmented MP4"
+  // screen share, ffmpeg's own streaming recipe, CMAF/DASH segments,
+  // MediaRecorder output of a mostly-static screen share.
+  //
+  // BOTH recipes are kept because they defeat DIFFERENT signals, and neither
+  // signal saves either file:
+  //   +frag_keyframe+empty_moov -> nb_frames=N/A  (no per-track frame accounting)
+  //   +frag_keyframe            -> nb_frames=10   (frame accounting present!)
+  // so a guard keyed on `nb_frames` presence passes the second one straight
+  // through. Only checking where the picture's packets actually END catches both.
+  const videoFragmentedEmptyMoov = join(dir, "fragmented_empty_moov.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=10:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    "-movflags", "+frag_keyframe+empty_moov",
+    videoFragmentedEmptyMoov,
+  ]);
+  const videoFragmentedKeyframe = join(dir, "fragmented_keyframe.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=10:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    "-movflags", "+frag_keyframe",
+    videoFragmentedKeyframe,
+  ]);
+  // AN EDIT-LIST MP4 -- `ffmpeg -ss 2 -c copy`, i.e. every iPhone trim, and the
+  // single most common video on earth. The OTHER side of the guard, and the
+  // fixture that keeps the 1.25x overbill dead.
+  //
+  // All 50 coded frames of the 10 s source are RETAINED; an `elst` trims the
+  // PRESENTATION to 8 s. So the file reports, correctly:
+  //
+  //   start_time=0.000000  duration=8.000000  nb_frames=50   (decodes to 8.00 s)
+  //
+  // ...while its RAW PACKET TIMESTAMPS -- which do NOT have the edit list applied
+  // -- run from pts -2.000 to 8.000, a span of 10.000. Any measurement that takes
+  // `max - min` therefore reads 10 s for an 8 s deliverable and bills 1.25x.
+  // Frames at negative pts are exactly the frames the edit list DISCARDS, which
+  // is why the measurement clamps its origin at zero.
+  //
+  // 5 fps (50 frames) rather than 25 to stay cheap; the mechanism is identical.
+  const videoEditListSource = join(dir, "edit_list_source.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=10:size=64x36:rate=5",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    videoEditListSource,
+  ]);
+  const videoEditList = join(dir, "edit_list.mp4");
+  run(["-ss", "2", "-i", videoEditListSource, "-c", "copy", videoEditList]);
   // Audio-only, no video stream at all: a voiceover .m4a. The ducking API
   // accepts this as a voice input, so callers naturally hand it to us — but
   // there is no picture to mux back onto.
@@ -236,6 +308,9 @@ export async function makeFixtures(dir: string): Promise<{
     videoSparsePictureMkv,
     videoSparsePictureTs,
     videoLongPictureLongerAudioMkv,
+    videoFragmentedEmptyMoov,
+    videoFragmentedKeyframe,
+    videoEditList,
     audioOnly,
     audioWithCoverArt,
     videoWithCoverArt,

@@ -1006,6 +1006,63 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect(delivered.durationSeconds).toBeLessThan(11.5);
   });
 
+  it("BILLS THE PICTURE, not a PHANTOM start, for a FRAGMENTED MP4 -- the one bug that CUT THE USER'S SPEECH OFF (both recipes)", async () => {
+    // BUG 1, END TO END, on the bytes actually handed to the transport.
+    //
+    // Every other billing bug in this suite OVERCHARGES. This one UNDERCHARGES,
+    // which is strictly worse: the uploaded voice track is SHORTER than the
+    // picture, so the customer pays for a mix whose speech is CUT OFF two seconds
+    // early and whose music stops before the picture does.
+    //
+    // A fragmented MP4 (OBS "fragmented MP4" recording, ffmpeg's own streaming
+    // recipe, CMAF/DASH segments, MediaRecorder screen capture) has no moov, so
+    // libavformat takes the video stream's `start_time` from the first packet in
+    // DECODE order -- a B-pyramid artifact, 2.000000, when the picture's packets
+    // really start at pts 0.000061 -- and derives
+    // `duration = packet_span - start_time` = 8.128 for a picture that runs 10 s.
+    //
+    // 8.128 is nowhere near the container's 30.128, so the
+    // looks-like-the-container's guard does not fire, and nb_frames does not save
+    // it either (absent under +empty_moov, PRESENT under plain +frag_keyframe --
+    // both are asserted here). THE SERVER BILLS THE DURATION OF THE AUDIO IT IS
+    // GIVEN: 8.13 s uploaded for a 10 s picture is a 0.81x bill and a truncated
+    // deliverable.
+    for (const [name, video] of [
+      ["empty_moov", fx.videoFragmentedEmptyMoov],
+      ["frag_keyframe", fx.videoFragmentedKeyframe],
+    ] as const) {
+      const output = join(dir, `fragmented_${name}.mp4`);
+      const { client, uploadedVoice } = stubClient();
+
+      await duckMusicUnderSpeech({
+        video,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      });
+
+      // What was actually uploaded, and therefore actually BILLED.
+      expect(uploadedVoice, name).toHaveLength(1);
+      const billedPath = join(dir, `billed_fragmented_${name}.m4a`);
+      await writeFile(billedPath, uploadedVoice[0]!.bytes);
+      const billed = await probeVideo(billedPath, "ffprobe");
+      // The picture's 10 s. NEVER the 8.13 s the phantom-derived field claims --
+      // that is the figure that cuts the speech off.
+      expect(billed.durationSeconds, name).toBeGreaterThan(9.5);
+      expect(billed.durationSeconds, name).toBeLessThan(11.5); // nor the container's 30 s
+
+      // ...and the voice the customer paid for genuinely covers the whole picture:
+      // billed >= delivered, so nothing is truncated.
+      const delivered = await probeVideo(output, "ffprobe");
+      expect(delivered.videoDurationSeconds!, name).toBeGreaterThan(9.5);
+      expect(billed.durationSeconds, name).toBeGreaterThanOrEqual(
+        delivered.videoDurationSeconds! - 0.5,
+      );
+    }
+  });
+
   it("accepts a video whose PICTURE is under the cap even though its container runs over it", async () => {
     // 350 s of picture under 365 s of audio (Matroska). The backend gates on the
     // video stream's duration -- audio_ducking.py, whose comments cite an
