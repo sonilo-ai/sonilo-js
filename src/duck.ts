@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { SoniloClient } from "sonilo";
@@ -19,11 +19,12 @@ const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface DuckMusicUnderSpeechOptions {
-  /** Path to the video. Must have an audio track and run no longer than 360 s. */
+  /** Path to the video. Must have a picture and an audio track, and its picture
+   * must run no longer than 360 s. */
   video: string;
-  /** Music: Track.audio bytes, or a path to an audio file. */
+  /** Music: Track.audio bytes, or a path to an audio file. No longer than 360 s. */
   audio: Uint8Array | string;
-  /** Explicit output path. */
+  /** Explicit output path. Must carry a file extension, so ffmpeg can infer a container. */
   output: string;
   /** Defaults to `new SoniloClient()` (reads SONILO_API_KEY). */
   client?: DuckingClient;
@@ -41,12 +42,15 @@ export interface DuckMusicUnderSpeechOptions {
 /** Duck generated music under the speech already in `video`.
  *
  * The ducking itself runs on the Sonilo API — a PAID endpoint, metered on the
- * video's duration. Only the extracted audio track is uploaded; the picture
- * stays local and is copied, never re-encoded.
+ * uploaded voice track's duration. Only the extracted audio track is uploaded,
+ * trimmed to the picture's length so the billed duration equals the delivered
+ * one; the picture stays local and is copied, never re-encoded.
  *
- * Preconditions the API cannot satisfy (no audio track, longer than
- * MAX_DUCKING_DURATION_SECONDS) throw before anything is uploaded, and so
- * before anything is charged. There is deliberately no fallback to
+ * Preconditions the API cannot satisfy (no audio track, no picture, a video or
+ * music track longer than MAX_DUCKING_DURATION_SECONDS) — and preconditions the
+ * local mux cannot satisfy (an `output` with no extension) — throw before
+ * anything is uploaded, and so before anything is charged. There is
+ * deliberately no fallback to
  * mixWithVideo: a caller who asked for ducking must never silently receive an
  * un-ducked file. */
 export async function duckMusicUnderSpeech(
@@ -66,6 +70,17 @@ export async function duckMusicUnderSpeech(
 
   if (!video) throw new VideoKitError("video is required");
   if (!output) throw new VideoKitError("output is required");
+  // A `output` with no extension leaves ffmpeg with no way to infer a muxer
+  // for the temp mux target below (`muxed${extname(output)}` degrades to a
+  // bare `muxed`), and it fails with "Error opening output file". That is
+  // knowable now — and only now is it free: by mux time the API call has
+  // already been billed.
+  if (!extname(output)) {
+    throw new VideoKitError(
+      `output "${output}" has no file extension, so ffmpeg cannot tell which container ` +
+        `to write. Give it one (e.g. "${output}.mp4").`,
+    );
+  }
   if (!audio || (typeof audio !== "string" && audio.byteLength === 0)) {
     throw new VideoKitError("audio is required");
   }
@@ -80,22 +95,70 @@ export async function duckMusicUnderSpeech(
         `Use mixWithVideo to lay music over a silent video.`,
     );
   }
-  if (probe.durationSeconds > MAX_DUCKING_DURATION_SECONDS) {
+  // No picture to duck under. The ducking API itself accepts an audio-only
+  // voice input, so this is a natural thing to hand us (a .m4a voiceover, a
+  // podcast .wav) — and without this guard it passes every other check, gets
+  // uploaded, gets CHARGED, and only then dies in the mux, where `-map 0:V`
+  // matches no stream. `videoDurationSeconds`/`videoCodec` are null for a file
+  // whose only "video" stream is attached cover art, which `-map 0:V` also
+  // excludes; that file must be rejected here too, for exactly the same reason.
+  const videoDuration = probe.videoDurationSeconds;
+  if (videoDuration === null) {
     throw new VideoKitError(
-      `${video} runs ${probe.durationSeconds.toFixed(1)}s; the ducking API accepts ` +
+      `${video} has no video stream (embedded cover art does not count), so there is ` +
+        `no picture to mux the ducked audio back onto. Duck an audio-only file with the ` +
+        `ducking API directly, or pass a real video.`,
+    );
+  }
+  // Guard, bill, and mux on the PICTURE's duration, never the container's:
+  // format.duration is ffprobe's maximum over all streams, so for a video
+  // whose audio track outlives its picture (routine encoder padding) it is the
+  // AUDIO's length. The server bills the uploaded voice track, and the
+  // deliverable is only as long as the picture, so any figure longer than the
+  // picture would overbill for seconds nobody receives -- and any figure
+  // longer than the cap would reject a video the API explicitly accepts
+  // (measured server-side: 358s picture / 361s audio is accepted and billed 358s).
+  if (videoDuration > MAX_DUCKING_DURATION_SECONDS) {
+    throw new VideoKitError(
+      `${video} runs ${videoDuration.toFixed(1)}s; the ducking API accepts ` +
         `at most ${MAX_DUCKING_DURATION_SECONDS}s. Use mixWithVideo for longer videos.`,
     );
   }
 
-  const client = options.client ?? new SoniloClient();
-
   const workDir = await mkdtemp(join(tmpdir(), "sonilo-video-kit-duck-"));
   try {
+    // The music obeys the same cap as the video (the server applies
+    // MAX_DURATION_SECONDS to it too, in get_audio_duration(music_path)), so
+    // probe it here rather than uploading up to 300 MB the server will only
+    // reject. Bytes have to reach the disk before ffprobe can read them --
+    // hence the workDir -- but the client is STILL constructed only after
+    // every fail-fast guard has run, so a bad input reports its own problem
+    // even when SONILO_API_KEY is unset.
+    const musicPath =
+      typeof audio === "string" ? audio : join(workDir, "music.mp3");
+    if (typeof audio !== "string") await writeFile(musicPath, audio);
+
+    const musicProbe = await probeVideo(musicPath, ffprobePath);
+    if (musicProbe.durationSeconds > MAX_DUCKING_DURATION_SECONDS) {
+      throw new VideoKitError(
+        `The music runs ${musicProbe.durationSeconds.toFixed(1)}s; the ducking API accepts ` +
+          `at most ${MAX_DUCKING_DURATION_SECONDS}s. Use a shorter music track.`,
+      );
+    }
+
+    const client = options.client ?? new SoniloClient();
+
     // Upload the audio track, never the picture: a few MB instead of up to the
     // API's 300 MB upload cap, and the original picture is never re-encoded by
-    // anyone else.
+    // anyone else. Trimmed to the picture's length: the server takes an
+    // audio-only voice input as `is_video = False` and bills exactly what it
+    // is given, so uploading audio that outlives the picture would be billed
+    // for -- 2.5x over, on a measured 4s-picture/10s-audio mp4 -- while the
+    // deliverable stays as long as the picture. Trimming here makes the billed
+    // duration equal the delivered duration, which is the server's own
+    // `min(audio, picture)` rule.
     const voicePath = join(workDir, "voice.m4a");
-    await extractAudio(video, voicePath, probe.audioCodec, ffmpegPath);
+    await extractAudio(video, voicePath, probe.audioCodec, ffmpegPath, videoDuration);
 
     const voiceBytes = new Uint8Array(await readFile(voicePath));
     const musicBytes =
@@ -146,7 +209,7 @@ export async function duckMusicUnderSpeech(
     const muxedPath = join(workDir, `muxed${extname(output)}`);
     let stage = `Muxing the ducked audio onto ${video}`;
     try {
-      await muxVideoWithAudio(video, duckedPath, muxedPath, probe.durationSeconds, ffmpegPath);
+      await muxVideoWithAudio(video, duckedPath, muxedPath, videoDuration, ffmpegPath);
       stage = `Placing the finished mix at ${output}`;
       await placeAtomically(muxedPath, output);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readdir, readFile, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -38,16 +38,24 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-/** Stub client: 202 on submit, then one `succeeded` poll. Records every call. */
+/** Stub client: 202 on submit, then one `succeeded` poll. Records every call,
+ * and the bytes of the voice track actually submitted -- the ducking API bills
+ * the uploaded voice track's duration, so `uploadedVoice` is precisely what the
+ * account is charged for, and the only thing worth asserting billing on. */
 function stubClient(taskBody: Record<string, unknown> = {
   status: "succeeded",
   output_url: "https://r2.example/ducked.wav",
   output_type: "audio",
 }) {
   const calls: string[] = [];
+  const uploadedVoice: Uint8Array[] = [];
   const client: DuckingClient = {
-    async request(path) {
+    async request(path, init) {
       calls.push(path);
+      if (path === "/v1/audio-ducking" && init?.body instanceof FormData) {
+        const voice = init.body.get("voice_file");
+        if (voice instanceof Blob) uploadedVoice.push(new Uint8Array(await voice.arrayBuffer()));
+      }
       const body = path === "/v1/audio-ducking"
         ? { task_id: "t_1", status: "processing" }
         : taskBody;
@@ -57,7 +65,7 @@ function stubClient(taskBody: Record<string, unknown> = {
       });
     },
   };
-  return { client, calls };
+  return { client, calls, uploadedVoice };
 }
 
 /** Stub download: hands back the fixture wav, standing in for the R2 object. */
@@ -155,6 +163,116 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
       }),
     ).rejects.toThrow(new RegExp(`${MAX_DUCKING_DURATION_SECONDS}`));
     expect(calls).toEqual([]);
+  });
+
+  it("bills on the picture, not the container: uploads a voice track trimmed to the picture's length", async () => {
+    // fx.videoAudioOutlivesPicture: 1 s of picture, 3 s of audio. ffprobe's
+    // format.duration is the MAX over all streams (3.0), not the picture's
+    // (1.0), so extracting/uploading on format.duration uploads -- and is
+    // BILLED FOR -- 3 s of audio while the deliverable only ever carries 1 s
+    // of picture: a 3x overcharge for seconds the viewer never receives. The
+    // server bills an audio-only voice input exactly as given (is_video =
+    // False), so it cannot apply its own min(picture, audio) rule on our
+    // behalf; the trim has to happen here.
+    const output = join(dir, "outlives.mp4");
+    const { client, uploadedVoice } = stubClient();
+
+    await duckMusicUnderSpeech({
+      video: fx.videoAudioOutlivesPicture,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    });
+
+    // What was actually uploaded, and therefore actually billed.
+    expect(uploadedVoice).toHaveLength(1);
+    const billedPath = join(dir, "billed_voice.m4a");
+    await writeFile(billedPath, uploadedVoice[0]!);
+    const billed = await probeVideo(billedPath, "ffprobe");
+    expect(billed.durationSeconds).toBeLessThan(1.5); // the picture's 1 s, not the container's 3 s
+    expect(billed.durationSeconds).toBeGreaterThan(0.5); // and the speech is genuinely there
+
+    // ...and the deliverable is as long as the picture, not the stale audio.
+    const delivered = await probeVideo(output, "ffprobe");
+    expect(delivered.videoDurationSeconds!).toBeLessThan(1.5);
+    expect(delivered.durationSeconds).toBeLessThan(1.5);
+  });
+
+  it("rejects an audio-only file before calling the API", async () => {
+    // A .m4a voiceover: has an audio track, is well under the cap, and so
+    // passes every pre-fix guard -- it is uploaded, POLLED, and CHARGED, and
+    // only then dies in the mux, where `-map 0:V` matches no stream (exit 234).
+    const { client, calls } = stubClient();
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.audioOnly,
+        audio: fx.musicMp3,
+        output: join(dir, "never_audio_only.mp4"),
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).rejects.toThrow(/no video stream/);
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
+  });
+
+  it("rejects a file whose only video stream is attached cover art before calling the API", async () => {
+    // The nastier half of the same bug: this file HAS a video stream by
+    // codec_type (mjpeg cover art), so a `videoCodec !== null` check would
+    // wave it through -- while `-map 0:V` (capital V) excludes attached
+    // pictures and matches nothing, exactly as for the audio-only file above.
+    const { client, calls } = stubClient();
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.audioWithCoverArt,
+        audio: fx.musicMp3,
+        output: join(dir, "never_cover_art.mp4"),
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).rejects.toThrow(/no video stream/);
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
+  });
+
+  it("rejects an output path with no file extension before calling the API", async () => {
+    // The temp mux target is `muxed${extname(output)}`, which degrades to a
+    // bare `muxed` here -- ffmpeg can infer no muxer from it and fails with
+    // "Error opening output file muxed". Pre-fix that happens AFTER the API
+    // call has been billed, for a problem knowable before it.
+    const { client, calls } = stubClient();
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output: join(dir, "no_extension_at_all"),
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).rejects.toThrow(/no file extension/);
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
+  });
+
+  it("rejects music longer than the API's cap before uploading it", async () => {
+    // The server applies MAX_DURATION_SECONDS to the music too
+    // (get_audio_duration(music_path) in audio_ducking.py), so an over-long
+    // music file is rejected server-side anyway -- but only after we have
+    // uploaded it. Guard it locally instead of spending the bandwidth.
+    const { client, calls } = stubClient();
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicTooLong,
+        output: join(dir, "never_long_music.mp4"),
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).rejects.toThrow(new RegExp(`music runs .*${MAX_DUCKING_DURATION_SECONDS}s`));
+    expect(calls).toEqual([]); // nothing was uploaded
   });
 
   it("surfaces a failed task as DuckingFailedError with the refund flag", async () => {
