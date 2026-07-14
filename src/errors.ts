@@ -1,7 +1,24 @@
 export class VideoKitError extends Error {
-  constructor(message: string) {
+  /** The error this one wraps, when it wraps one — the standard `Error.cause`.
+   *
+   * Some failures have to be re-thrown as a VideoKitError to carry context the
+   * original error does not have (chiefly: the ducking task id, and the fact
+   * that the account has ALREADY been charged — see duck.ts). Losing the
+   * original in the process would cost the caller the only thing they can
+   * branch on: an abort they requested themselves arrives as a plain
+   * VideoKitError, and `catch (e) { if (e.name === "AbortError") return; }`
+   * treats their own cancellation as a hard failure. The original stays
+   * reachable here, so `err.cause` still answers "was this my abort?".
+   *
+   * Declared and assigned explicitly rather than passed to `super(message,
+   * { cause })`: this package targets ES2020, whose `Error` has no `cause`
+   * option in the lib types. */
+  readonly cause?: unknown;
+
+  constructor(message: string, options?: { cause?: unknown }) {
     super(message);
     this.name = new.target.name;
+    if (options !== undefined && "cause" in options) this.cause = options.cause;
   }
 }
 

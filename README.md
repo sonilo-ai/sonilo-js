@@ -72,10 +72,19 @@ copied into the result untouched.
 The API sets the ducking curve itself (speech gate, duck depth, −14 LUFS
 delivery, −1 dBTP ceiling), so there are no volume knobs to pass.
 
-Two requirements are enforced locally, before anything is uploaded or charged:
-the video must have an audio track, and it must run no longer than **360
-seconds**. Either failure throws; the kit never quietly falls back to an
-un-ducked mix. Use `mixWithVideo` for silent or longer videos.
+Requirements are enforced locally, before anything is uploaded or charged: the
+video must have an audio track and a real picture, it must run no longer than
+**360 seconds**, and `output` must carry a file extension and live in a
+directory that already exists and is writable. Any failure throws before the
+API is called; the kit never quietly falls back to an un-ducked mix. Use
+`mixWithVideo` for silent or longer videos.
+
+Both the 360 s limit and the amount you are billed are measured on the
+**picture**, never on the container. A video whose audio track outlives its
+picture (routine encoder padding; and the norm for `.mkv`/`.webm`) is billed for
+the seconds you actually receive, not for the longest stream in the file — and a
+350-second picture under a 365-second audio track is accepted, exactly as the API
+itself accepts it.
 
 ### Nothing you have paid for is thrown away
 
@@ -101,9 +110,9 @@ artifact, and errors end up in logs.)
 If a final, purely-local step — remuxing the ducked audio onto your picture,
 or placing the finished file at `output` — fails after the API call has
 already run (for example, `output`'s extension names a container that can't
-hold your video's codec, such as `.webm` for an h264 source; or `output`'s
-directory doesn't exist or is read-only; or the disk holding `output` fills
-up), the kit does not throw away the mix you already paid for. It saves the
+hold your video's codec, such as `.webm` for an h264 source; or the disk
+holding `output` fills up), the kit does not throw away the mix you already
+paid for. It saves the
 downloaded ducked audio to `<output>.ducked.wav` and throws an error naming
 that path, so you can fix the local problem (e.g. pick a working container,
 or a valid `output` path) and finish locally instead of calling
@@ -113,10 +122,9 @@ untouched and the new one is saved alongside it (`<output>.ducked.1.wav`) —
 a rescue never overwrites or deletes a paid-for mix it did not itself write.
 The file is also always placed at `output` atomically — a failure partway
 through never leaves a truncated file there. In the rare case where even that
-rescue save fails (e.g. `output`'s directory doesn't exist, so there's nowhere
-to save the rescue copy either), the error says so explicitly, names the task
-id, and points you at the re-poll above instead of surfacing a bare filesystem
-error.
+rescue save fails (e.g. the disk is full, so there's nowhere to save the rescue
+copy either), the error says so explicitly, names the task id, and points you at
+the re-poll above instead of surfacing a bare filesystem error.
 
 ## Errors
 
@@ -126,6 +134,22 @@ error.
 ducking API accepted the job but could not finish it — carries `code` and
 `refunded`). Errors from the Sonilo API pass through as the `sonilo` package's
 typed errors.
+
+Failures *after* the ducking job was submitted are wrapped in a `VideoKitError`,
+so that the message can carry the task id and the fact that you have already been
+charged (see above). The original error stays reachable on `cause`, so your own
+cancellation is still recognisable as one:
+
+```ts
+try {
+  await duckMusicUnderSpeech({ video, audio, output, signal: controller.signal });
+} catch (err) {
+  if (err instanceof VideoKitError && (err.cause as Error | undefined)?.name === "AbortError") {
+    return; // we aborted this ourselves
+  }
+  throw err; // note: the task is still running, and still billed — see the task id in the message
+}
+```
 
 `refunded` reports what the server said **at the moment the task was polled**,
 not a final verdict: the backend marks a task failed before it reverses the

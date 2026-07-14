@@ -1,10 +1,52 @@
-import { mkdtemp, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FfmpegError, FfmpegNotFoundError, VideoKitError } from "../src/errors.js";
 import { extractAudio, measureIntegratedLufs, muxVideoWithAudio, probeVideo, runProcess } from "../src/ffmpeg.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
+
+/** A stand-in ffprobe: the real one, with the two CHEAP sources of the
+ * picture's duration deleted from its JSON -- every stream's `duration` field
+ * and every `DURATION` tag. That is the shape of a container which offers
+ * neither (and the shape probeVideo used to answer with the CONTAINER's
+ * duration, i.e. the longest stream's, which for these fixtures is the audio).
+ * No real file on hand produces it -- MP4/MOV/TS carry the field, Matroska/WebM
+ * carry the tag, and a container with neither also carries no format.duration,
+ * so probeVideo rejects it earlier -- so the missing pieces are removed from a
+ * real probe instead. `breakPacketCount` additionally deletes `avg_frame_rate`,
+ * which is what makes the packet MEASUREMENT impossible too. */
+async function fakeFfprobe(dir: string, opts: { breakPacketCount?: boolean }): Promise<string> {
+  const path = join(dir, `fake_ffprobe_${opts.breakPacketCount ? "unmeasurable" : "measurable"}.mjs`);
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const res = spawnSync("ffprobe", process.argv.slice(2), { encoding: "utf8" });
+if (res.status !== 0) {
+  process.stderr.write(res.stderr ?? "");
+  process.exit(res.status ?? 1);
+}
+let out = res.stdout;
+try {
+  const parsed = JSON.parse(out);
+  for (const s of parsed.streams ?? []) {
+    delete s.duration;
+    for (const key of Object.keys(s.tags ?? {})) {
+      if (key.toUpperCase().startsWith("DURATION")) delete s.tags[key];
+    }
+    ${opts.breakPacketCount ? "delete s.avg_frame_rate;" : ""}
+  }
+  out = JSON.stringify(parsed);
+} catch {
+  // not JSON (e.g. a -of default query): pass it through untouched
+}
+process.stdout.write(out);
+`,
+  );
+  await chmod(path, 0o755);
+  return path;
+}
 
 describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
   let dir: string;
@@ -40,6 +82,57 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     // Where the two agree, they agree.
     const normal = await probeVideo(fx.videoWithAudio, "ffprobe");
     expect(normal.videoDurationSeconds!).toBeCloseTo(normal.durationSeconds, 0);
+  });
+
+  it("probeVideo reports the PICTURE's duration for Matroska and WebM, which carry no per-stream duration field", async () => {
+    // The container that breaks a `streams[].duration ?? format.duration`
+    // fallback: Matroska and WebM NEVER emit a per-stream `duration` field, so
+    // the fallback fires for 100% of them and hands back format.duration --
+    // ffprobe's max over all streams, i.e. the AUDIO's 3 s, for a 1 s picture.
+    // duck.ts bills, trims and muxes on this number. The picture's real length
+    // is carried as a stream TAG (`DURATION: 00:00:01.000000000`).
+    for (const path of [fx.videoAudioOutlivesPictureMkv, fx.videoAudioOutlivesPictureWebm]) {
+      const probe = await probeVideo(path, "ffprobe");
+      expect(probe.durationSeconds).toBeGreaterThan(2.5); // the container: the audio's length
+      expect(probe.videoDurationSeconds!).toBeLessThan(1.5); // the picture's own length
+      expect(probe.videoDurationSeconds!).toBeGreaterThan(0.5);
+      expect(probe.hasAudio).toBe(true);
+    }
+  });
+
+  it("probeVideo reads the picture's duration from the stream's DURATION tag, not the container, near the cap", async () => {
+    // 350 s of picture under 365 s of audio, in Matroska. The backend gates on
+    // the VIDEO stream's duration (audio_ducking.py; its comments cite an
+    // accepted 358 s picture / 361 s audio case), so this file is legal --
+    // but a probe that reports the container's 365 s makes duck.ts's cap guard
+    // refuse it, and tell the user their 350 s video is 365 s long.
+    const probe = await probeVideo(fx.videoLongPictureLongerAudioMkv, "ffprobe");
+    expect(probe.durationSeconds).toBeGreaterThan(360); // the container is over the cap...
+    expect(probe.videoDurationSeconds!).toBeGreaterThan(345); // ...while the picture is under it
+    expect(probe.videoDurationSeconds!).toBeLessThan(355);
+  });
+
+  it("probeVideo MEASURES the picture when the container carries neither a duration field nor a DURATION tag", async () => {
+    // Tier 3. `fakeFfprobe` is the real ffprobe with every stream `duration`
+    // and `DURATION` tag stripped from its JSON -- the one shape left for which
+    // neither cheap source of the picture's length exists. The picture must
+    // still be measured (packets / frame rate), NOT read off the container:
+    // format.duration is untouched here and still says 3 s, so a fallback to it
+    // is exactly what this asserts against.
+    const probe = await probeVideo(fx.videoAudioOutlivesPicture, await fakeFfprobe(dir, {}));
+    expect(probe.durationSeconds).toBeGreaterThan(2.5); // the container still reads 3 s...
+    expect(probe.videoDurationSeconds!).toBeCloseTo(1, 1); // ...and the picture was measured at 1 s
+  });
+
+  it("probeVideo REFUSES to guess the picture's duration rather than falling back to the container's", async () => {
+    // Tier 4. Same stripped ffprobe, but the packet measurement is broken too
+    // (no avg_frame_rate), so the picture's length cannot be established by any
+    // means. The old code answered format.duration here -- the audio's length,
+    // the very number duck.ts would then BILL the customer for. Refusing is the
+    // only safe answer, and it costs nothing: this runs before any upload.
+    await expect(
+      probeVideo(fx.videoAudioOutlivesPicture, await fakeFfprobe(dir, { breakPacketCount: true })),
+    ).rejects.toThrow(/Could not determine how long the picture/);
   });
 
   it("probeVideo reports no picture for audio-only files, including one with cover art", async () => {

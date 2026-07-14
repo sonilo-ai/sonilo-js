@@ -23,6 +23,9 @@ export async function makeFixtures(dir: string): Promise<{
   videoLongSilent: string;
   videoTooLong: string;
   videoAudioOutlivesPicture: string;
+  videoAudioOutlivesPictureMkv: string;
+  videoAudioOutlivesPictureWebm: string;
+  videoLongPictureLongerAudioMkv: string;
   audioOnly: string;
   audioWithCoverArt: string;
   videoWithCoverArt: string;
@@ -84,6 +87,47 @@ export async function makeFixtures(dir: string): Promise<{
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
     videoAudioOutlivesPicture,
   ]);
+  // The SAME shape (1 s of picture, 3 s of audio) in Matroska and WebM.
+  //
+  // These are not redundant with the .mp4 above: Matroska and WebM never emit a
+  // per-stream `duration` FIELD at all. A probe that falls back to the
+  // container's format.duration when the field is missing therefore reads 3.0 s
+  // -- the AUDIO's length -- for 100% of MKV/WebM files, which is precisely the
+  // number that must never reach the billing/trim path. (The picture's real
+  // length is in the stream's `tags.DURATION`, "00:00:01.000000000".)
+  //
+  // Kept cheap: 128x72 at 10 fps, and vp9 at `-deadline realtime -cpu-used 8`
+  // (10 frames; ~40 ms).
+  const videoAudioOutlivesPictureMkv = join(dir, "audio_outlives_picture.mkv");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    videoAudioOutlivesPictureMkv,
+  ]);
+  const videoAudioOutlivesPictureWebm = join(dir, "audio_outlives_picture.webm");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-deadline", "realtime", "-cpu-used", "8",
+    "-c:a", "libopus",
+    videoAudioOutlivesPictureWebm,
+  ]);
+  // A LEGAL video the cap guard must not reject: 350 s of picture (under the
+  // API's 360 s limit, and the only figure the backend gates on) under 365 s of
+  // audio (over it). The backend accepts exactly this -- audio_ducking.py gates
+  // on the video stream's duration, and its comments cite a real 358 s picture /
+  // 361 s audio case. A guard reading the container's duration instead reports
+  // "runs 365.0s" and refuses a video the API would have taken. Matroska,
+  // because that is where the missing per-stream duration bites. Cheap: 1 fps at
+  // 64x36, 8 kHz mono audio.
+  const videoLongPictureLongerAudioMkv = join(dir, "long_picture_longer_audio.mkv");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=350:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=365:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    videoLongPictureLongerAudioMkv,
+  ]);
   // Audio-only, no video stream at all: a voiceover .m4a. The ducking API
   // accepts this as a voice input, so callers naturally hand it to us — but
   // there is no picture to mux back onto.
@@ -133,6 +177,9 @@ export async function makeFixtures(dir: string): Promise<{
     videoLongSilent,
     videoTooLong,
     videoAudioOutlivesPicture,
+    videoAudioOutlivesPictureMkv,
+    videoAudioOutlivesPictureWebm,
+    videoLongPictureLongerAudioMkv,
     audioOnly,
     audioWithCoverArt,
     videoWithCoverArt,

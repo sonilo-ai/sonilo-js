@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, constants, copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { SoniloClient } from "sonilo";
@@ -48,8 +48,9 @@ export interface DuckMusicUnderSpeechOptions {
  *
  * Preconditions the API cannot satisfy (no audio track, no picture, a video or
  * music track longer than MAX_DUCKING_DURATION_SECONDS) — and preconditions the
- * local mux cannot satisfy (an `output` with no extension) — throw before
- * anything is uploaded, and so before anything is charged. There is
+ * local mux and the local filesystem cannot satisfy (an `output` with no
+ * extension, or in a directory that does not exist or is not writable) — throw
+ * before anything is uploaded, and so before anything is charged. There is
  * deliberately no fallback to
  * mixWithVideo: a caller who asked for ducking must never silently receive an
  * un-ducked file. */
@@ -75,14 +76,37 @@ export async function duckMusicUnderSpeech(
   if (!video) throw new VideoKitError("video is required");
   if (!output) throw new VideoKitError("output is required");
   // A `output` with no extension leaves ffmpeg with no way to infer a muxer
-  // for the temp mux target below (`muxed${extname(output)}` degrades to a
+  // for the temp mux target below (`muxed${outputExtension}` degrades to a
   // bare `muxed`), and it fails with "Error opening output file". That is
   // knowable now — and only now is it free: by mux time the API call has
   // already been billed.
-  if (!extname(output)) {
+  //
+  // Tested for length, not truthiness: `extname("deliverable.")` is ".", which
+  // is truthy but names no container — `muxed.` is just as unmuxable as `muxed`,
+  // and fails just as late, i.e. after the charge.
+  const outputExtension = extname(output);
+  if (outputExtension.length < 2) {
     throw new VideoKitError(
       `output "${output}" has no file extension, so ffmpeg cannot tell which container ` +
-        `to write. Give it one (e.g. "${output}.mp4").`,
+        `to write. Give it one (e.g. "${output.replace(/\.$/, "")}.mp4").`,
+    );
+  }
+  // `output`'s directory has to exist and be writable, and this is the moment
+  // it is free to say so. `output: "out/final.mp4"` with no `out/` is an
+  // everyday call: without this guard it passes every other check, the job is
+  // submitted, the account is CHARGED, the mux succeeds -- and then the
+  // placement ENOENTs, and the rescue, which writes next to `output` and so
+  // into the very same missing directory, ENOENTs too. The customer pays and
+  // NOTHING lands on disk, not even the rescue.
+  const outputDir = dirname(output);
+  try {
+    await access(outputDir, constants.W_OK);
+  } catch {
+    throw new VideoKitError(
+      `output "${output}" is in a directory that does not exist or cannot be written to ` +
+        `(${outputDir}). Create it first (e.g. \`mkdir -p ${outputDir}\`): the ducking API ` +
+        `is billed at submit, so discovering this after the call would cost you the charge ` +
+        `AND leave nowhere to put the mix you paid for.`,
     );
   }
   if (!audio || (typeof audio !== "string" && audio.byteLength === 0)) {
@@ -224,7 +248,7 @@ export async function duckMusicUnderSpeech(
     // downloaded mix next to `output` before the `finally` below deletes
     // workDir, and say so in the error. `stage` records which step was in
     // flight so the error names the step that actually failed.
-    const muxedPath = join(workDir, `muxed${extname(output)}`);
+    const muxedPath = join(workDir, `muxed${outputExtension}`);
     let stage = `Muxing the ducked audio onto ${video}`;
     try {
       await muxVideoWithAudio(video, duckedPath, muxedPath, videoDuration, ffmpegPath);
@@ -271,12 +295,22 @@ function paidNote(taskId: string): string {
  *
  * The presigned output_url is deliberately never put in the message: it is a
  * capability granting read access to the artifact, and errors get logged. The
- * task id is the safe handle -- it yields a fresh URL on the next poll. */
+ * task id is the safe handle -- it yields a fresh URL on the next poll.
+ *
+ * The original error is CHAINED as `cause`, not discarded. Wrapping loses the
+ * error's identity, and one identity here is the caller's own: an abort the
+ * caller requested arrives as a DOMException named "AbortError", and a caller
+ * doing `catch (e) { if (e.name === "AbortError") return; }` would otherwise
+ * see their deliberate cancellation as a hard failure. `err.cause` keeps that
+ * question answerable while the message still carries the task id and the
+ * charge -- which an abort needs just as much as any other post-submit failure,
+ * since aborting the client does not stop (or refund) the task. */
 function rethrowWithTaskId(err: unknown, taskId: string): unknown {
   if (err instanceof DuckingFailedError) return err;
   const reason = err instanceof Error ? err.message : String(err);
   return new VideoKitError(
     `The ducking API ran, but the finished mix could not be collected: ${reason}. ${paidNote(taskId)}`,
+    { cause: err },
   );
 }
 
@@ -377,8 +411,14 @@ async function rescueAndThrow(
       `Attempting to also save the ducked audio to ${recoveredPath} ALSO failed ` +
       `(${rescueReason}), so the mix could not be recovered locally. ${paidNote(taskId)}`;
   }
+  // The original failure is chained as `cause` for the same reason it is in
+  // rethrowWithTaskId: the wrapper carries the context (the stage, the rescue,
+  // the charge), but it must not be the only thing left of the error that
+  // actually happened -- an FfmpegError's exitCode/stderrTail, an fs error's
+  // `code`, are still worth branching on.
   throw new VideoKitError(
     `${stage} failed, after the ducking API had already run and been billed for this ` +
       `video's duration. ${rescueNote} Original error: ${reason}`,
+    { cause },
   );
 }
