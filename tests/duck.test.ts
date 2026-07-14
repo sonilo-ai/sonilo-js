@@ -1,4 +1,4 @@
-import { access, mkdtemp, readdir, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -257,9 +257,87 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect(err).toBeInstanceOf(VideoKitError);
     const recoveredPath = `${output}.ducked.wav`;
     expect((err as VideoKitError).message).toContain(recoveredPath);
+    // Confirms the failure was attributed to the mux step, not placement --
+    // load-bearing for the "placement failure" tests below, which assert the
+    // opposite stage name to prove the mux actually ran and succeeded.
+    expect((err as VideoKitError).message).toContain("Muxing the ducked audio onto");
 
     expect(await exists(output)).toBe(false); // no corrupt/truncated file at output
     expect(await exists(recoveredPath)).toBe(true); // the paid-for mix survives
     expect(new Uint8Array(await readFile(recoveredPath))).toEqual(ducked);
+  });
+
+  it("preserves the paid-for ducked mix and leaves no file at output when placing the finished mix fails (mux succeeds)", async () => {
+    // Force a failure at the placement step specifically, after a
+    // successful mux: make `output` an already-existing *directory*. The
+    // mux writes into workDir (unaffected by output's directory), so it
+    // completes fine; placeAtomically's copyFile into a sibling temp file
+    // (in the same, real, directory as output) also succeeds; only the
+    // final `rename(tempPath, output)` fails, with EISDIR, since you cannot
+    // rename a file onto an existing directory. Because output's directory
+    // genuinely exists, the rescue copy to `${output}.ducked.wav` (a
+    // sibling of `output`, in that same real directory) can still succeed
+    // -- so this test proves the rescue path itself works, not just that
+    // finding 3 (rescue-also-fails) kicks in.
+    const output = join(dir, "already_a_directory.mp4");
+    await mkdir(output);
+    const { client } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const recoveredPath = `${output}.ducked.wav`;
+    expect((err as VideoKitError).message).toContain(recoveredPath);
+    // Proves the mux itself succeeded and only placement failed: if the mux
+    // had failed instead, the message would say "Muxing the ducked audio
+    // onto", not this.
+    expect((err as VideoKitError).message).toContain("Placing the finished mix at");
+
+    expect((await stat(output)).isDirectory()).toBe(true); // untouched -- no file was ever placed there
+    expect(await exists(recoveredPath)).toBe(true); // the paid-for mix survives
+    expect(new Uint8Array(await readFile(recoveredPath))).toEqual(ducked);
+  });
+
+  it("throws an informative VideoKitError naming the charge, not a bare fs error, when the rescue copy also fails", async () => {
+    // Force placement AND the rescue to both fail: point `output` inside a
+    // directory that does not exist at all. The mux still succeeds (it only
+    // depends on workDir and output's extension). placeAtomically then
+    // fails opening the sibling temp file (ENOENT, missing directory), and
+    // the rescue copy -- which writes `${output}.ducked.wav` into that same
+    // missing directory -- fails for the same reason. This is finding 3:
+    // the rescue failing must not surface a raw ENOENT that mentions
+    // neither the original failure nor the fact the API call was billed.
+    const output = join(dir, "does_not_exist_at_all", "ducked.mp4");
+    const recoveredPath = `${output}.ducked.wav`;
+    const { client } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    // Proves the mux succeeded and placement (not muxing) is what failed.
+    expect(message).toContain("Placing the finished mix at");
+    // Proves the rescue-also-failed branch ran, and that it still names the
+    // charge instead of silently dropping context.
+    expect(message).toContain("ALSO failed");
+    expect(message).toMatch(/charge/i);
+    expect(message).toContain(recoveredPath);
+
+    expect(await exists(output)).toBe(false);
+    expect(await exists(recoveredPath)).toBe(false); // rescue genuinely failed -- nothing was written there
   });
 });
