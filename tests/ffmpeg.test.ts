@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -111,6 +111,50 @@ async function probeAudioStreamDuration(path: string, ffprobePath: string): Prom
   return Number(stdout.trim());
 }
 
+/** MD5 of the PICTURE's coded packets — the bytes of the video stream itself,
+ * demuxed and copied, with no container framing. Two files share this digest
+ * only if their picture is bit-for-bit the same compressed stream, which is
+ * exactly what `-c:v copy` promises and what ANY re-encode (libx264 included)
+ * breaks. Probing `videoCodec === "h264"` cannot tell the two apart: a libx264
+ * re-encode of an h264 source is still h264. */
+async function videoStreamMd5(path: string, ffmpegPath: string): Promise<string> {
+  const { stdout } = await runProcess(ffmpegPath, [
+    "-v", "error",
+    "-i", path,
+    "-map", "0:V",
+    "-c", "copy",
+    "-f", "md5", "-",
+  ]);
+  return stdout.trim();
+}
+
+/** Every stream in the file, as `codec_type`/`codec_name`/`attached_pic`
+ * triples — enough to say not just "there is a picture" but "there is EXACTLY
+ * ONE picture and it is not album art". */
+async function probeStreams(
+  path: string,
+  ffprobePath: string,
+): Promise<Array<{ type: string; codec: string; attachedPic: boolean }>> {
+  const { stdout } = await runProcess(ffprobePath, [
+    "-v", "error",
+    "-print_format", "json",
+    "-show_streams",
+    path,
+  ]);
+  const parsed = JSON.parse(stdout) as {
+    streams?: Array<{
+      codec_type?: string;
+      codec_name?: string;
+      disposition?: { attached_pic?: number };
+    }>;
+  };
+  return (parsed.streams ?? []).map((s) => ({
+    type: s.codec_type ?? "",
+    codec: s.codec_name ?? "",
+    attachedPic: s.disposition?.attached_pic === 1,
+  }));
+}
+
 describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () => {
   let dir: string;
   let fx: Awaited<ReturnType<typeof makeFixtures>>;
@@ -127,11 +171,87 @@ describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () =>
     await muxVideoWithAudio(fx.videoWithAudio, fx.duckedWav, output, source.durationSeconds, "ffmpeg");
 
     const probe = await probeVideo(output, "ffprobe");
-    expect(probe.videoCodec).toBe("h264"); // -c:v copy preserved the original stream
+    expect(probe.videoCodec).toBe("h264");
     expect(probe.hasAudio).toBe(true);
     expect(probe.audioCodec).toBe("aac");
     expect(probe.durationSeconds).toBeGreaterThan(0.5);
     expect(probe.durationSeconds).toBeLessThan(2);
+  });
+
+  it("copies the picture BIT-FOR-BIT: the muxed video stream hashes identical to the source's", async () => {
+    // The package's promise is that the customer's picture is never re-encoded
+    // -- no generation loss, no re-compression, and no minutes of CPU on a 4K
+    // file. `probe.videoCodec === "h264"` cannot check that: swap `-c:v copy`
+    // for `-c:v libx264` and the output is still h264, still the right
+    // duration, still passes every other assertion in this file. The coded
+    // packets of the video stream are the only thing that tells them apart.
+    const output = join(dir, "muxed_bitforbit.mp4");
+    const source = await probeVideo(fx.videoWithAudio, "ffprobe");
+
+    await muxVideoWithAudio(fx.videoWithAudio, fx.duckedWav, output, source.durationSeconds, "ffmpeg");
+
+    const sourceMd5 = await videoStreamMd5(fx.videoWithAudio, "ffmpeg");
+    const outputMd5 = await videoStreamMd5(output, "ffmpeg");
+    expect(outputMd5).toBe(sourceMd5); // a re-encode cannot reproduce this digest
+  });
+
+  it("maps only the real picture, never attached cover art (-map 0:V, capital V)", async () => {
+    // fx.videoWithCoverArt: a genuine h264 picture, an aac track, AND an
+    // attached_pic mjpeg (an iTunes/M4V export, a podcast with a thumbnail).
+    // Lowercase `-map 0:v` matches BOTH video streams, so the cover art rides
+    // into the deliverable as a second video stream -- a file that is no longer
+    // the picture the caller handed us, and whose stream layout no longer
+    // matches what probeVideo (which excludes attached pictures, by design)
+    // reports about it.
+    const output = join(dir, "muxed_cover_art.mp4");
+    const source = await probeVideo(fx.videoWithCoverArt, "ffprobe");
+    expect(source.videoCodec).toBe("h264"); // the fixture really does have a real picture
+
+    await muxVideoWithAudio(fx.videoWithCoverArt, fx.duckedWav, output, source.videoDurationSeconds!, "ffmpeg");
+
+    const streams = await probeStreams(output, "ffprobe");
+    const pictures = streams.filter((s) => s.type === "video");
+    expect(pictures).toHaveLength(1); // exactly one video stream...
+    expect(pictures[0]!.codec).toBe("h264"); // ...the real one...
+    expect(pictures[0]!.attachedPic).toBe(false); // ...and not the album art.
+    expect(streams.filter((s) => s.type === "audio")).toHaveLength(1);
+
+    // And the deliverable is a real video with real audio, not the few-hundred-
+    // byte husk a mux that stopped on the cover art's single packet would leave.
+    const probe = await probeVideo(output, "ffprobe");
+    expect(probe.hasAudio).toBe(true);
+    expect(probe.videoDurationSeconds!).toBeGreaterThan(0.5);
+    expect(await probeAudioStreamDuration(output, "ffprobe")).toBeGreaterThan(0.5);
+    expect((await stat(output)).size).toBeGreaterThan(5_000);
+  });
+
+  it("refuses a file whose only picture is cover art rather than muxing onto the album art", async () => {
+    // The other half of `-map 0:V`: for a file with NO real picture (a podcast
+    // .m4a with album art), capital V matches no stream at all and ffmpeg
+    // fails -- which is why duck.ts guards this input before it can be uploaded
+    // and charged. Lowercase `0:v` instead SUCCEEDS here, quietly handing back
+    // a "video" whose entire picture is a still album cover.
+    const output = join(dir, "muxed_cover_only.mp4");
+    await expect(
+      muxVideoWithAudio(fx.audioWithCoverArt, fx.duckedWav, output, 1, "ffmpeg"),
+    ).rejects.toBeInstanceOf(FfmpegError);
+  });
+
+  it("trims audio LONGER than the picture instead of letting it extend past the picture", async () => {
+    // The other half of the atrim/apad pair. fx.musicMp3 runs 2 s; the picture
+    // runs 1 s. Without `atrim=end=<dur>` the 2 s track is muxed in full (apad
+    // only ever pads, never truncates), so the deliverable carries a second of
+    // audio over a picture that has already ended -- and, on the ducking path,
+    // a deliverable longer than the picture the caller was billed for.
+    const output = join(dir, "muxed_trimmed.mp4");
+    const source = await probeVideo(fx.videoWithAudio, "ffprobe"); // 1 s of picture
+
+    await muxVideoWithAudio(fx.videoWithAudio, fx.musicMp3, output, source.videoDurationSeconds!, "ffmpeg");
+
+    const audioDuration = await probeAudioStreamDuration(output, "ffprobe");
+    expect(audioDuration).toBeLessThan(1.5); // the picture's 1 s, not the music's 2 s
+    expect(audioDuration).toBeGreaterThan(0.5); // and the audio is genuinely there
+    expect((await probeVideo(output, "ffprobe")).durationSeconds).toBeLessThan(1.5);
   });
 
   it("pads audio shorter than the picture instead of truncating the picture", async () => {

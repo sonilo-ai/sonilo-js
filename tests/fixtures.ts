@@ -25,6 +25,7 @@ export async function makeFixtures(dir: string): Promise<{
   videoAudioOutlivesPicture: string;
   audioOnly: string;
   audioWithCoverArt: string;
+  videoWithCoverArt: string;
   musicMp3: string;
   musicTooLong: string;
   duckedWav: string;
@@ -103,6 +104,20 @@ export async function makeFixtures(dir: string): Promise<{
     "-disposition:v:0", "attached_pic",
     audioWithCoverArt,
   ]);
+  // A REAL video that ALSO carries attached cover art (an iTunes/M4V export, a
+  // podcast episode with an episode thumbnail): a genuine h264 picture, an aac
+  // track, AND a `disposition.attached_pic=1` mjpeg stream. This is the file
+  // that tells `-map 0:V` apart from `-map 0:v`: capital V selects only the
+  // real picture, lowercase drags the cover art into the deliverable as a
+  // second video stream.
+  const videoWithCoverArt = join(dir, "video_cover_art.mp4");
+  run([
+    "-i", videoWithAudio, "-i", coverPng,
+    "-map", "0:v:0", "-map", "0:a:0", "-map", "1:v:0",
+    "-c:v:0", "copy", "-c:a", "copy", "-c:v:1", "mjpeg",
+    "-disposition:v:1", "attached_pic",
+    videoWithCoverArt,
+  ]);
   // 361 s of music — one second past the cap the API applies to the MUSIC
   // track too. Cheap: a low-sample-rate mono sine.
   const musicTooLong = join(dir, "music_too_long.mp3");
@@ -120,6 +135,7 @@ export async function makeFixtures(dir: string): Promise<{
     videoAudioOutlivesPicture,
     audioOnly,
     audioWithCoverArt,
+    videoWithCoverArt,
     musicMp3,
     musicTooLong,
     duckedWav,

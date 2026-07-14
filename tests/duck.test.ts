@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DuckingClient } from "../src/ducking-api.js";
 import { duckMusicUnderSpeech, MAX_DUCKING_DURATION_SECONDS } from "../src/duck.js";
 import { DuckingFailedError, VideoKitError } from "../src/errors.js";
-import { probeVideo } from "../src/ffmpeg.js";
+import { extractAudio, probeVideo } from "../src/ffmpeg.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
 
 /** Marker naming the one recovery path this suite deliberately corrupts, so
@@ -14,6 +14,12 @@ import { hasFfmpeg, makeFixtures } from "./fixtures.js";
  * other tests, and anything the test file itself does) running against the
  * real filesystem. */
 const PARTIAL_RESCUE_MARKER = "partial_rescue_probe";
+
+/** Marker naming the OTHER recovery path this suite corrupts on purpose: the
+ * copy that stages the finished mix next to `output` before it is renamed into
+ * place. Kept distinct from PARTIAL_RESCUE_MARKER so each test breaks exactly
+ * one copy, and every other copyFile in the file runs for real. */
+const ATOMIC_PLACEMENT_MARKER = "atomic_placement_probe";
 
 /** `fs.copyFile` can't be made to fail partway through on demand -- there's
  * no portable way to force ENOSPC mid-stream in a test. To prove the
@@ -33,28 +39,59 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         await actual.writeFile(dest, "PARTIAL-DATA-FROM-A-FAILED-COPY");
         throw new Error("simulated ENOSPC partway through the rescue copy");
       }
+      // The placement copy for an ATOMIC_PLACEMENT_MARKER output, corrupted the
+      // same way: partial bytes, then a rejection. `.ducked.` is excluded so the
+      // RESCUE copy that follows (which shares the output's basename, marker and
+      // all) still runs for real -- the point of that test is what is left at
+      // `output`, not whether the rescue works. The condition is deliberately
+      // written against the DESTINATION and not against ".tmp": a placement that
+      // copies straight onto `output` -- i.e. one that is not atomic -- must be
+      // caught by this shim too, or the test could not tell the two apart.
+      if (
+        typeof dest === "string" &&
+        dest.includes(ATOMIC_PLACEMENT_MARKER) &&
+        !dest.includes(".ducked.")
+      ) {
+        await actual.writeFile(dest, "PARTIAL-DATA-FROM-A-FAILED-COPY");
+        throw new Error("simulated ENOSPC partway through placing the finished mix");
+      }
       return (actual.copyFile as (...a: unknown[]) => Promise<void>)(src, dest, ...rest);
     }),
   };
 });
 
+interface Upload {
+  filename: string;
+  bytes: Uint8Array;
+}
+
 /** Stub client: 202 on submit, then one `succeeded` poll. Records every call,
- * and the bytes of the voice track actually submitted -- the ducking API bills
- * the uploaded voice track's duration, so `uploadedVoice` is precisely what the
- * account is charged for, and the only thing worth asserting billing on. */
+ * and the multipart part actually submitted as `voice_file` -- filename and
+ * bytes both. This is the ONLY place the package's central promise can be
+ * checked: the picture never leaves the machine, and the ducking API is handed
+ * (and bills for) nothing but the extracted audio track. Asserting on what the
+ * transport forwards proves nothing about what duck.ts hands it; asserting here
+ * does. */
 function stubClient(taskBody: Record<string, unknown> = {
   status: "succeeded",
   output_url: "https://r2.example/ducked.wav",
   output_type: "audio",
 }) {
   const calls: string[] = [];
-  const uploadedVoice: Uint8Array[] = [];
+  const uploadedVoice: Upload[] = [];
   const client: DuckingClient = {
     async request(path, init) {
       calls.push(path);
       if (path === "/v1/audio-ducking" && init?.body instanceof FormData) {
         const voice = init.body.get("voice_file");
-        if (voice instanceof Blob) uploadedVoice.push(new Uint8Array(await voice.arrayBuffer()));
+        if (voice instanceof Blob) {
+          uploadedVoice.push({
+            // A FormData part appended with a filename is a File, whose `name`
+            // is the filename the multipart body actually carries.
+            filename: voice instanceof File ? voice.name : "",
+            bytes: new Uint8Array(await voice.arrayBuffer()),
+          });
+        }
       }
       const body = path === "/v1/audio-ducking"
         ? { task_id: "t_1", status: "processing" }
@@ -187,6 +224,61 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
   });
 
+  it("uploads the extracted AUDIO TRACK and never the picture", async () => {
+    // The package's loudest promise -- "your picture never leaves your machine"
+    // (README; the docstring on duckMusicUnderSpeech) -- and the only test that
+    // checks it. Everything else in this suite is satisfied just as well by a
+    // duck.ts that POSTs the whole .mp4: the API stub would still answer 202,
+    // the mix would still download, the deliverable would still probe fine.
+    // The proof has to be made against the bytes that were actually handed to
+    // the client.
+    const output = join(dir, "uploads_audio_only.mp4");
+    const { client, uploadedVoice } = stubClient();
+
+    await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    });
+
+    expect(uploadedVoice).toHaveLength(1);
+    const uploaded = uploadedVoice[0]!;
+    expect(uploaded.filename).toBe("voice.m4a"); // not "with_audio.mp4"
+
+    // The payload is NOT the video file. (The minimum bar: a whole-video upload
+    // cannot clear it.)
+    const videoBytes = new Uint8Array(await readFile(fx.videoWithAudio));
+    expect(uploaded.bytes).not.toEqual(videoBytes);
+
+    // The payload carries NO PICTURE AT ALL. Stronger than byte-inequality --
+    // which any re-container or transcode of the video would also satisfy --
+    // and it is the actual promise: whatever reaches the API, no frame of the
+    // customer's video is in it.
+    const uploadedPath = join(dir, "uploaded_voice.m4a");
+    await writeFile(uploadedPath, uploaded.bytes);
+    const probe = await probeVideo(uploadedPath, "ffprobe");
+    expect(probe.videoCodec).toBeNull(); // no video stream, not even cover art
+    expect(probe.videoDurationSeconds).toBeNull();
+    expect(probe.hasAudio).toBe(true); // ...and the speech really is there
+    expect(probe.audioCodec).toBe("aac");
+
+    // And it is byte-for-byte the track this machine extracted locally: the
+    // upload is exactly `extractAudio`'s output, with nothing else added.
+    const extracted = join(dir, "expected_voice.m4a");
+    const source = await probeVideo(fx.videoWithAudio, "ffprobe");
+    await extractAudio(
+      fx.videoWithAudio,
+      extracted,
+      source.audioCodec,
+      "ffmpeg",
+      source.videoDurationSeconds!,
+    );
+    expect(uploaded.bytes).toEqual(new Uint8Array(await readFile(extracted)));
+  });
+
   it("rejects a video with no audio track before calling the API", async () => {
     const { client, calls } = stubClient();
     await expect(
@@ -239,7 +331,7 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     // What was actually uploaded, and therefore actually billed.
     expect(uploadedVoice).toHaveLength(1);
     const billedPath = join(dir, "billed_voice.m4a");
-    await writeFile(billedPath, uploadedVoice[0]!);
+    await writeFile(billedPath, uploadedVoice[0]!.bytes);
     const billed = await probeVideo(billedPath, "ffprobe");
     expect(billed.durationSeconds).toBeLessThan(1.5); // the picture's 1 s, not the container's 3 s
     expect(billed.durationSeconds).toBeGreaterThan(0.5); // and the speech is genuinely there
@@ -694,6 +786,51 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
       expect((err as VideoKitError).message).toContain(rescuedPath);
     },
   );
+
+  it("never leaves a partial file at output when the placement copy dies partway through", async () => {
+    // placeAtomically stages the finished mix in a sibling temp file and
+    // renames it into place, so `output` is either absent or the complete
+    // deliverable -- never a half-written one. A plain
+    // `copyFile(muxedPath, output)` would pass every other test in this suite
+    // (including the "output is a directory" ones: a plain copyFile onto a
+    // directory fails with EISDIR just the same), while opening `output` itself
+    // O_CREAT|O_TRUNC and streaming into it -- so an ENOSPC halfway through
+    // leaves a truncated video exactly where the caller was told to find their
+    // deliverable, and the call still reports failure. Nothing distinguishes
+    // the two but a copy that dies MID-WRITE, which the shim at the top of this
+    // file simulates for this output's name.
+    //
+    // Its own directory, so the leftover-temp-file check below can read the
+    // whole listing without the rest of the suite's outputs in it.
+    const outDir = join(dir, "atomic_dir");
+    await mkdir(outDir);
+    const output = join(outDir, `${ATOMIC_PLACEMENT_MARKER}.mp4`);
+    const { client } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    // The mux ran and succeeded; only the placement failed.
+    expect((err as VideoKitError).message).toContain("Placing the finished mix at");
+
+    // (a) Nothing at all is at `output` -- no truncated deliverable. A
+    // non-atomic placement would have left the shim's partial bytes right here.
+    expect(await exists(output)).toBe(false);
+
+    // (b) ...and the failed placement littered no temp file behind either. The
+    // only thing in the directory is the rescued, paid-for mix.
+    const entries = await readdir(outDir);
+    expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
+    expect(entries).toEqual([`${ATOMIC_PLACEMENT_MARKER}.mp4.ducked.wav`]);
+    expect(new Uint8Array(await readFile(join(outDir, entries[0]!)))).toEqual(ducked);
+  });
 
   it("removes a partial recovery file left by a rescue copy that fails partway through", async () => {
     // Same shape as "already_a_directory" above -- output pre-exists as a
