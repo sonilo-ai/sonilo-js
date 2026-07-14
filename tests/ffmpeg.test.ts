@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FfmpegError, FfmpegNotFoundError, VideoKitError } from "../src/errors.js";
-import { extractAudio, measureIntegratedLufs, muxVideoWithAudio, probeVideo, runProcess } from "../src/ffmpeg.js";
+import { extractAudio, measureIntegratedLufs, muxVideoWithAudio, probeMuxFeasibility, probeVideo, runProcess } from "../src/ffmpeg.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
 
 /** A stand-in ffprobe: the real one, with the two CHEAP sources of the
@@ -700,6 +700,151 @@ describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () =>
     // this test fails if the apad padding is ever removed.
     const audioDuration = await probeAudioStreamDuration(output, "ffprobe");
     expect(audioDuration).toBeGreaterThan(3.5);
+  });
+});
+
+describe.skipIf(!hasFfmpeg)("probeMuxFeasibility (requires ffmpeg on PATH)", () => {
+  let dir: string;
+  let fx: Awaited<ReturnType<typeof makeFixtures>>;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "svk-feasible-"));
+    fx = await makeFixtures(dir);
+  });
+
+  /** Did the REAL mux (muxVideoWithAudio, unchanged, the whole file) succeed? */
+  async function realMuxSucceeds(video: string, ext: string, tag: string): Promise<boolean> {
+    const probe = await probeVideo(video, "ffprobe");
+    const out = join(dir, `realmux_${tag}${ext}`);
+    try {
+      await muxVideoWithAudio(video, fx.duckedWav, out, probe.videoDurationSeconds!, "ffmpeg");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("is EQUIVALENT to the real mux across the whole container matrix: it accepts everything the mux accepts, and rejects everything it rejects", async () => {
+    // THE TEST THAT KEEPS THE GUARD HONEST, IN BOTH DIRECTIONS AT ONCE.
+    //
+    // A pre-charge feasibility check has two ways to be wrong, and they are not
+    // symmetric:
+    //
+    //  - TOO PERMISSIVE: it passes, the account is CHARGED, and the mux then
+    //    fails anyway. That is the bug it exists to fix, merely moved.
+    //  - TOO STRICT: it refuses a video the mux WOULD have muxed. That is WORSE.
+    //    The customer is denied a deliverable they could have had, and no error
+    //    message makes that acceptable. It is exactly what a hand-written
+    //    codec/container compatibility matrix drifts into.
+    //
+    // The only assertion that closes both at once is EQUIVALENCE WITH THE REAL
+    // MUX, so that is what is asserted -- not against a table of expected
+    // verdicts (which would just be the hand-written matrix again, one level up),
+    // but against `muxVideoWithAudio` itself, run in full, on every source shape
+    // the suite has and every container extension a caller might name.
+    //
+    // Sources span the matrix: MP4/h264, MKV, WebM/VP9, a well-formed MPEG-TS, a
+    // low-fps MPEG-TS (the width=0 picture), a fragmented MP4, an edit-list MP4,
+    // an FLV, a clock-offset MKV, and an MP4 carrying attached cover art
+    // alongside a real picture.
+    const sources: [string, string][] = [
+      ["mp4_h264", fx.videoWithAudio],
+      ["mkv", fx.videoAudioOutlivesPictureMkv],
+      ["webm_vp9", fx.videoAudioOutlivesPictureWebm],
+      ["ts", fx.videoPcrOffsetTs],
+      ["ts_lowfps", fx.videoSparsePictureTs],
+      ["fragmented", fx.videoFragmentedEmptyMoov],
+      ["edit_list", fx.videoEditList],
+      ["flv", fx.videoFlv],
+      ["clock_offset_mkv", fx.videoClockOffsetMkv],
+      ["cover_art", fx.videoWithCoverArt],
+    ];
+    const extensions = [".mp4", ".mov", ".mkv", ".webm", ".ts", ".avi", ".flv"];
+
+    const disagreements: string[] = [];
+    let accepted = 0;
+    for (const [name, video] of sources) {
+      for (const ext of extensions) {
+        const tag = `${name}${ext.replace(".", "_")}`;
+        const feasible = await probeMuxFeasibility(
+          video,
+          join(dir, `feasible_${tag}${ext}`),
+          "ffmpeg",
+        );
+        const real = await realMuxSucceeds(video, ext, tag);
+        if (feasible.ok !== real) {
+          disagreements.push(
+            `${name} -> ${ext}: check said ${feasible.ok ? "OK" : "REJECT"}, ` +
+              `the real mux ${real ? "SUCCEEDED" : "FAILED"}`,
+          );
+        }
+        if (real) accepted += 1;
+      }
+    }
+
+    // A false REJECTION and a false ACCEPTANCE are both in here, named.
+    expect(disagreements).toEqual([]);
+    // ...and the matrix is not trivially all-reject: most of it really does mux.
+    expect(accepted).toBeGreaterThan(40);
+  }, 300_000);
+
+  it("rejects h264 into WebM, and says so without running the mux", async () => {
+    const verdict = await probeMuxFeasibility(
+      fx.videoWithAudio,
+      join(dir, "h264_into.webm"),
+      "ffmpeg",
+    );
+    expect(verdict.ok).toBe(false);
+    // The reason quotes ffmpeg's own stderr, so it is never a stale claim of ours
+    // about what WebM holds -- and it quotes the CAUSE (the first lines) rather
+    // than the downstream noise that follows it.
+    expect(verdict.ok === false && verdict.reason).toMatch(/VP8 or VP9 or AV1/i);
+  });
+
+  it("rejects a low-frame-rate MPEG-TS whose picture reports no dimensions", async () => {
+    // ffprobe reports width=0/height=0 for this picture, yet probeVideo succeeds
+    // (the time model measures packets and never looks at dimensions), so nothing
+    // else in the pre-charge path catches it.
+    expect((await probeVideo(fx.videoSparsePictureTs, "ffprobe")).videoDurationSeconds)
+      .toBeGreaterThan(9);
+
+    const verdict = await probeMuxFeasibility(
+      fx.videoSparsePictureTs,
+      join(dir, "no_dimensions.mp4"),
+      "ffmpeg",
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.reason).toMatch(/dimensions not set/i);
+  });
+
+  it("is CHEAP: it copies ONE frame, so it does not read the file it is checking", async () => {
+    // The check runs on EVERY call, including the happy path, so a full demux or
+    // (worse) a re-encode would be unacceptable. `-frames:v 1` bounds it: ffmpeg
+    // opens the input, writes the header, copies one video packet, writes the
+    // trailer, done -- so the cost is independent of the file's length. Measured
+    // on a 1156 MB / 120 s 4K h264 file: 20-40 ms, against 670 ms for the packet
+    // measurement probeVideo already performs on it and 320 ms for the real mux.
+    //
+    // Asserted here on what makes that true rather than on a wall clock (which
+    // would be flaky on shared CI): the dry run's OUTPUT holds a single frame,
+    // where the real mux's holds the lot.
+    const out = join(dir, "cheap_probe.mp4");
+    const verdict = await probeMuxFeasibility(fx.videoEditList, out, "ffmpeg");
+    expect(verdict.ok).toBe(true);
+
+    const frames = Number(
+      (
+        await runProcess("ffprobe", [
+          "-v", "error",
+          "-select_streams", "v:0",
+          "-count_packets",
+          "-show_entries", "stream=nb_read_packets",
+          "-of", "default=nw=1:nk=1",
+          out,
+        ])
+      ).stdout.trim(),
+    );
+    expect(frames).toBe(1); // ...and not the fixture's 40+
   });
 });
 

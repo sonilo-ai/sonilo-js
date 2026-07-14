@@ -86,6 +86,51 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+/** A stand-in ffmpeg: the REAL one for every step except the final mux, which it
+ * fails.
+ *
+ * It exists because the post-charge rescue path must stay tested, and the file
+ * that used to provoke it no longer can. That test drove an h264 source into a
+ * `.webm` output: the mux failed, and it failed AFTER the charge, which is
+ * exactly the rescue's reason to exist. A pre-charge mux-feasibility check now
+ * REFUSES that call before the API is ever touched -- which is the point of the
+ * check, and which leaves the rescue with nothing to trigger it.
+ *
+ * The rescue is still load-bearing: every remaining reason a mux can fail at the
+ * last moment (the disk fills up between the check and the mux; the source file
+ * is truncated or unlinked under us; ffmpeg is killed) happens after the account
+ * has been charged, and the paid-for mix must survive it. Those are all failures
+ * of the MUX RUN rather than of the mux's FEASIBILITY, and no input file can
+ * express one -- by construction, since any input-shaped mux failure is now
+ * caught before the charge. So the failure is injected into the ffmpeg run
+ * itself.
+ *
+ * The mux is singled out by `-filter_complex`, which ONLY muxVideoWithAudio
+ * passes: the feasibility dry run and extractAudio are forwarded to the real
+ * ffmpeg and genuinely succeed, so everything up to and including the charge
+ * happens for real, and only the step the rescue guards is broken. */
+async function fakeFfmpegFailingTheMux(dir: string): Promise<string> {
+  const path = join(dir, "fake_ffmpeg_failing_mux.mjs");
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const argv = process.argv.slice(2);
+// -filter_complex is muxVideoWithAudio's, and only its.
+if (argv.includes("-filter_complex")) {
+  process.stderr.write("simulated failure while writing the muxed deliverable\\n");
+  process.exit(1);
+}
+const res = spawnSync("ffmpeg", argv, { encoding: "utf8" });
+process.stdout.write(res.stdout ?? "");
+process.stderr.write(res.stderr ?? "");
+process.exit(res.status ?? 1);
+`,
+  );
+  await chmod(path, 0o755);
+  return path;
+}
+
 interface Upload {
   filename: string;
   bytes: Uint8Array;
@@ -555,16 +600,20 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect(await newWorkDirs(before)).toEqual([]);
   });
 
-  it("preserves the paid-for ducked mix and leaves no file at output when the local mux fails", async () => {
-    // h264 (the fixture's video codec) cannot be copied into a WebM
-    // container: ffmpeg's webm muxer only accepts VP8/VP9/AV1. `-c:v copy`
-    // therefore fails at the mux step specifically -- probing and audio
-    // extraction don't touch `output`'s extension, so nothing upstream of
-    // the mux call can fail this way. Confirmed manually: `ffmpeg -i
-    // <h264 mp4> -i <wav> -c:v copy -c:a aac out.webm` exits non-zero with
-    // "Only VP8 or VP9 or AV1 video ... are supported for WebM."
+  it("rejects an h264 source with a .webm output BEFORE calling the API", async () => {
+    // A WRONG OUTPUT EXTENSION -- the most ordinary user mistake there is, not an
+    // exotic input. h264 cannot be stream-copied into WebM (that muxer takes only
+    // VP8/VP9/AV1), and duckMusicUnderSpeech never re-encodes the picture, so the
+    // final mux CANNOT succeed. Nothing above the mux touched `output`'s
+    // extension, so pre-fix every guard passed, the job was submitted, THE
+    // ACCOUNT WAS CHARGED, and only then did ffmpeg refuse to write the header --
+    // for a fact knowable in 30 ms, before the upload.
+    //
+    // The rescue still worked, so the paid mix was not lost. That is not good
+    // enough: the customer paid for a deliverable this call could never have
+    // produced.
     const output = join(dir, "impossible_container.webm");
-    const { client } = stubClient();
+    const { client, calls } = stubClient();
 
     const err = await duckMusicUnderSpeech({
       video: fx.videoWithAudio,
@@ -574,6 +623,88 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
       pollIntervalMs: 1,
       fetch: stubFetch(ducked),
     }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).toContain("h264"); // it names the codec that cannot fit
+    expect(message).toContain(".webm"); // ...and the container that cannot hold it
+    expect(message).toMatch(/\.mp4|\.mkv|\.mov/); // ...and one that can
+    expect(message).toMatch(/NOT been charged/i);
+
+    // THE ASSERTION THE FIX IS FOR: the client was never even called, so nothing
+    // was uploaded and nothing was charged.
+    expect(calls).toEqual([]);
+    expect(await exists(output)).toBe(false);
+    expect(await exists(`${output}.ducked.wav`)).toBe(false); // nothing to rescue: nothing was paid for
+  });
+
+  it("rejects a low-frame-rate MPEG-TS whose picture has no dimensions BEFORE calling the API", async () => {
+    // The nastier half of the same gap, and the one no user could have foreseen.
+    // ffprobe reports this file's picture as `width=0 height=0` -- at 1 fps the
+    // demuxer never gathers codec parameters from packets that sparse -- yet
+    // probeVideo SUCCEEDS, because the time model establishes the picture's
+    // length by measuring its packets and does not care about its dimensions. So
+    // every guard passed, the account was CHARGED, and the mux then died with
+    // "dimensions not set" / "Could not write header".
+    //
+    // No output extension can save this one: the video stream itself is not
+    // stream-copyable, so the error must say re-encode, not "pick another
+    // container".
+    const output = join(dir, "no_dimensions.mp4");
+    const { client, calls } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoSparsePictureTs,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).toContain("ANY container"); // no extension rescues this file
+    expect(message).toContain("Re-encode"); // ...so it says what actually would
+    expect(message).toMatch(/NOT been charged/i);
+
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
+    expect(await exists(output)).toBe(false);
+    expect(await exists(`${output}.ducked.wav`)).toBe(false);
+  });
+
+  it("preserves the paid-for ducked mix and leaves no file at output when the local mux fails", async () => {
+    // THE POST-CHARGE RESCUE PATH. Still load-bearing, and still tested -- but it
+    // can no longer be reached with an input file. It used to be provoked with an
+    // h264 source and a `.webm` output (an impossible stream copy), and that call
+    // is now refused before the API is ever touched (see the test above), which is
+    // precisely the improvement.
+    //
+    // What remains after the feasibility check are the mux failures no
+    // precondition can predict: the disk fills between the check and the mux, the
+    // source is truncated under us, ffmpeg is OOM-killed. They all land in the
+    // same place -- a non-zero exit from muxVideoWithAudio, AFTER the account has
+    // been charged -- and the mix the customer has already paid for must survive
+    // it. So the failure is injected into the ffmpeg run itself (see
+    // fakeFfmpegFailingTheMux): every earlier ffmpeg step, the feasibility dry run
+    // included, runs for real and succeeds, the job really is submitted and
+    // charged, and only the mux fails.
+    const output = join(dir, "mux_run_fails.mp4");
+    const { client, calls } = stubClient();
+    const ffmpegPath = await fakeFfmpegFailingTheMux(dir);
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+      ffmpegPath,
+    }).catch((e: unknown) => e);
+
+    // The charge really happened: this is the post-charge path, not a guard.
+    expect(calls).toEqual(["/v1/audio-ducking", "/v1/tasks/t_1"]);
 
     expect(err).toBeInstanceOf(VideoKitError);
     const recoveredPath = `${output}.ducked.wav`;

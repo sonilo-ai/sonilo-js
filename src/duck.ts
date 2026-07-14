@@ -10,7 +10,7 @@ import {
   type DuckingClient,
 } from "./ducking-api.js";
 import { DuckingFailedError, VideoKitError } from "./errors.js";
-import { extractAudio, muxVideoWithAudio, probeVideo } from "./ffmpeg.js";
+import { extractAudio, muxVideoWithAudio, probeMuxFeasibility, probeVideo } from "./ffmpeg.js";
 
 /** The ducking API rejects voice, video, and music tracks longer than this. */
 export const MAX_DUCKING_DURATION_SECONDS = 360;
@@ -49,8 +49,9 @@ export interface DuckMusicUnderSpeechOptions {
  * Preconditions the API cannot satisfy (no audio track, no picture, a video or
  * music track longer than MAX_DUCKING_DURATION_SECONDS) — and preconditions the
  * local mux and the local filesystem cannot satisfy (an `output` with no
- * extension, or in a directory that does not exist or is not writable) — throw
- * before anything is uploaded, and so before anything is charged. There is
+ * extension, or in a directory that does not exist or is not writable; a picture
+ * that cannot be stream-copied into the container `output`'s extension names) —
+ * throw before anything is uploaded, and so before anything is charged. There is
  * deliberately no fallback to
  * mixWithVideo: a caller who asked for ducking must never silently receive an
  * un-ducked file. */
@@ -155,6 +156,47 @@ export async function duckMusicUnderSpeech(
 
   const workDir = await mkdtemp(join(tmpdir(), "sonilo-video-kit-duck-"));
   try {
+    // CAN THE PICTURE ACTUALLY BE STREAM-COPIED INTO THE CALLER'S CONTAINER?
+    // The last thing the mux needs that nothing above proves. probeVideo
+    // succeeding does NOT prove it -- it answers questions about DURATION, and
+    // two everyday files pass every guard above and still cannot be muxed:
+    //
+    //  - a LOW-FRAME-RATE MPEG-TS, whose picture ffprobe reports as width=0
+    //    height=0 while the duration model (which measures packets) happily
+    //    reports its length. The mux dies with "dimensions not set";
+    //  - an h264 source with a `.webm` output -- a WRONG FILE EXTENSION, the most
+    //    ordinary mistake there is. WebM holds only VP8/VP9/AV1.
+    //
+    // Both used to be found at the mux, which runs after the API call has been
+    // BILLED: the customer paid for a mix that could never be delivered, for a
+    // reason knowable for 30 ms before the upload. So ask ffmpeg -- never a
+    // hand-written codec/container matrix, which would go stale and start
+    // refusing videos that could have been ducked -- to dry-run the real mux's
+    // own `-map 0:V -c:v copy` into a container of the caller's own extension.
+    //
+    // Placed here, and specifically BEFORE `new SoniloClient()`, not merely
+    // before the submit. extractAudio runs after the client is constructed and is
+    // still pre-charge, so a guard could technically sit there too -- but it is a
+    // STEP OF THE WORK, not a precondition, and the invariant this file keeps is
+    // that every precondition on the caller's INPUTS is settled before the client
+    // exists. A guard after the client reports "SONILO_API_KEY is missing" for an
+    // unmuxable video, which is the wrong problem and hides the real one.
+    const feasibility = await probeMuxFeasibility(
+      video,
+      join(workDir, `feasibility${outputExtension}`),
+      ffmpegPath,
+    );
+    if (!feasibility.ok) {
+      throw await unmuxableError(
+        video,
+        outputExtension,
+        probe.videoCodec,
+        feasibility.reason,
+        workDir,
+        ffmpegPath,
+      );
+    }
+
     // The music obeys the same cap as the video (the server applies
     // MAX_DURATION_SECONDS to it too, in get_audio_duration(music_path)), so
     // probe it here rather than uploading up to 300 MB the server will only
@@ -262,6 +304,67 @@ export async function duckMusicUnderSpeech(
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+/** Containers offered to a caller whose chosen one cannot hold their picture.
+ * Not a compatibility matrix — nothing here is ASSERTED to work. Each candidate
+ * is dry-run against THIS file (see `unmuxableError`) and only survives if
+ * ffmpeg actually wrote it, so the suggestion is a measurement, not a claim that
+ * can rot. Ordered most-permissive first. */
+const FALLBACK_EXTENSIONS = [".mkv", ".mp4", ".mov"];
+
+/** The video is fine, the API would have taken it — but the picture cannot be
+ * stream-copied into the container the caller's `output` extension names, so the
+ * mux at the end could only fail. Say so BEFORE the charge, and say what to do.
+ *
+ * "What to do" is worth another few ffmpeg runs BECAUSE WE ARE ALREADY THROWING:
+ * this is the failure path, it costs the happy path nothing, and the difference
+ * between "your .webm won't work" and "your .webm won't work, .mkv and .mp4 both
+ * will — I just checked, on this file" is the difference between a user who
+ * retries successfully and one who guesses again. Each candidate is DRY-RUN, so
+ * nothing is promised that ffmpeg has not just demonstrated.
+ *
+ * When NO container can take the picture, the extension was never the problem:
+ * the video stream itself is not stream-copyable (the width=0 MPEG-TS), and no
+ * choice of `output` can rescue it. That is a different instruction — re-encode —
+ * and it gets a different message. */
+async function unmuxableError(
+  video: string,
+  outputExtension: string,
+  videoCodec: string | null,
+  reason: string,
+  workDir: string,
+  ffmpegPath: string,
+): Promise<VideoKitError> {
+  const codec = videoCodec ?? "its video stream";
+  const alternatives: string[] = [];
+  for (const ext of FALLBACK_EXTENSIONS) {
+    if (ext === outputExtension.toLowerCase()) continue;
+    const probed = await probeMuxFeasibility(video, join(workDir, `alt${ext}`), ffmpegPath);
+    if (probed.ok) alternatives.push(ext);
+  }
+
+  if (alternatives.length > 0) {
+    return new VideoKitError(
+      `${video}'s picture (${codec}) cannot be stream-copied into a "${outputExtension}" ` +
+        `container, so muxing the ducked audio back onto it would fail. duckMusicUnderSpeech ` +
+        `never re-encodes your picture, so the container has to be able to hold it as it is. ` +
+        `Give output an extension that can: ${alternatives.map((e) => `"${e}"`).join(", ")} ` +
+        `${alternatives.length > 1 ? "all work" : "works"} for this file (checked just now, ` +
+        `against this file). Refused before the ducking API was called, so you have NOT been ` +
+        `charged. ffmpeg said: ${reason}`,
+    );
+  }
+  return new VideoKitError(
+    `The picture in ${video} (${codec}) cannot be stream-copied into ANY container — not ` +
+      `"${outputExtension}", and not ${FALLBACK_EXTENSIONS.map((e) => `"${e}"`).join("/")} ` +
+      `either — so muxing the ducked audio back onto it would fail whatever output you chose. ` +
+      `ffmpeg cannot even write a header for this video stream (a low-frame-rate MPEG-TS, for ` +
+      `instance, carries a picture whose dimensions the demuxer never learns). Re-encode it ` +
+      `first and duck the result: \`ffmpeg -i ${video} -c:v libx264 -c:a copy fixed.mp4\`. ` +
+      `Refused before the ducking API was called, so you have NOT been charged. ffmpeg said: ` +
+      `${reason}`,
+  );
 }
 
 /** Plain words for "the API has run, you have been billed, and the mix is still

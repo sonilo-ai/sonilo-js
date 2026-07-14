@@ -74,10 +74,15 @@ delivery, −1 dBTP ceiling), so there are no volume knobs to pass.
 
 Requirements are enforced locally, before anything is uploaded or charged: the
 video must have an audio track and a real picture, it must run no longer than
-**360 seconds**, and `output` must carry a file extension and live in a
-directory that already exists and is writable. Any failure throws before the
-API is called; the kit never quietly falls back to an un-ducked mix. Use
-`mixWithVideo` for silent or longer videos.
+**360 seconds**, `output` must carry a file extension and live in a directory
+that already exists and is writable, and **your picture must be stream-copyable
+into the container `output`'s extension names** — the kit dry-runs the final mux
+first, so a wrong extension (`.webm` for an h264 video) or a video stream ffmpeg
+cannot copy at all is refused *before* the API call rather than after it. The
+error names your codec and, when another container would work, tells you which
+one (checked against your actual file, not a lookup table). Any failure throws
+before the API is called; the kit never quietly falls back to an un-ducked mix.
+Use `mixWithVideo` for silent or longer videos.
 
 Both the 360 s limit and the amount you are billed are measured on the
 **picture**, never on the container. A video whose audio track outlives its
@@ -109,9 +114,8 @@ artifact, and errors end up in logs.)
 
 If a final, purely-local step — remuxing the ducked audio onto your picture,
 or placing the finished file at `output` — fails after the API call has
-already run (for example, `output`'s extension names a container that can't
-hold your video's codec, such as `.webm` for an h264 source; or the disk
-holding `output` fills up), the kit does not throw away the mix you already
+already run (the disk holding `output` fills up mid-mux; the source file is
+truncated under you), the kit does not throw away the mix you already
 paid for. It saves the
 downloaded ducked audio to `<output>.ducked.wav` and throws an error naming
 that path, so you can fix the local problem (e.g. pick a working container,

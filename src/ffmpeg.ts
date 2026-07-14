@@ -1,6 +1,21 @@
 import { spawn } from "node:child_process";
 import { FfmpegError, FfmpegNotFoundError, VideoKitError } from "./errors.js";
 
+/** The silent audio the mux dry run (`probeMuxFeasibility`) encodes to aac.
+ *
+ * Synthesised (lavfi), never taken from the video itself, for the same reason
+ * the real mux's audio comes from a filter graph and not from the input: the
+ * question is whether the CONTAINER can hold the copied picture and an aac
+ * track, and that question must not be able to fail for an unrelated reason.
+ * The video's own audio would introduce one — an aac stream that `extractAudio`
+ * would happily `-c:a copy` but that this decode chokes on would be REFUSED a
+ * mix it could actually have received. Silence cannot fail to decode.
+ *
+ * Bounded (`d=0.05`) rather than infinite-with-`-frames:a`, so the input EOFs on
+ * its own and termination never depends on ffmpeg's "all output streams have hit
+ * their frame limit" bookkeeping. */
+const MUX_PROBE_SILENCE = "anullsrc=r=44100:cl=stereo:d=0.05";
+
 const STDERR_TAIL_CHARS = 4096;
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -617,6 +632,95 @@ export async function extractAudio(
       ? ["-t", trimToSeconds.toFixed(3)]
       : [];
   await runProcess(ffmpegPath, ["-y", "-i", video, "-vn", ...codecArgs, ...trimArgs, outPath]);
+}
+
+/** CAN THIS PICTURE BE STREAM-COPIED INTO THIS CONTAINER AT ALL? Asked by
+ * DRY-RUNNING THE REAL MUX, before anything is uploaded or charged.
+ *
+ * `probeVideo` succeeding does not answer this, and two everyday files prove it:
+ *
+ *  - a LOW-FRAME-RATE MPEG-TS, whose picture ffprobe reports as `width=0
+ *    height=0` (the demuxer never gathers codec parameters from packets that
+ *    sparse) while every duration guard passes, because the time model measures
+ *    packets. The mux then dies with "dimensions not set" / "Could not write
+ *    header";
+ *  - an h264 source with a `.webm` `output` -- an ORDINARY USER MISTAKE, a wrong
+ *    file extension. WebM carries only VP8/VP9/AV1, so `-c:v copy` cannot write
+ *    it, and the mux dies with "Could not write header".
+ *
+ * Both were knowable up front; both used to be discovered at the mux, which runs
+ * AFTER the ducking API has been called and the account CHARGED. Hence this.
+ *
+ * The question is put to FFMPEG, not to a hand-written codec/container
+ * compatibility matrix: such a matrix is exactly the thing that goes stale, and
+ * a wrong entry either charges for a mux that then fails (too permissive) or
+ * REFUSES A VIDEO THE USER COULD HAVE DUCKED (too strict -- worse). So this runs
+ * the SAME argv shape as `muxVideoWithAudio` -- `-map 0:V`, `-c:v copy`, `-c:a
+ * aac`, and an output path carrying the CALLER'S OWN extension, from which
+ * ffmpeg infers the identical muxer -- and simply asks whether ffmpeg can write
+ * the header and a frame. It cannot pass while the real mux fails: the
+ * compatibility check ffmpeg performs is the muxer's own `write_header`, which is
+ * where both failures above land.
+ *
+ * ONE FRAME, not zero. Writing the header alone is not enough, and an existing
+ * fixture proves it: h264 out of Matroska into `.avi` passes `write_header` and
+ * then fails on the FIRST PACKET ("h264 bitstream malformed, no startcode found,
+ * use the bitstream filter 'h264_mp4toannexb'"), because AVI wants Annex-B and
+ * the copied packets are AVCC. A header-only check would wave that straight
+ * through to a post-charge mux failure. Copying one real packet exercises the
+ * muxer's `write_packet` too, which is where every bitstream-format mismatch
+ * lands.
+ *
+ * `-frames:v 1` is what makes it CHEAP: ffmpeg opens the input, writes the
+ * header, copies ONE video packet, writes the trailer, and stops. Measured on a
+ * 1156 MB / 120 s 4K h264 file: 20-40 ms (MP4), 50 ms (MKV, fragmented MP4),
+ * 60 ms (MPEG-TS) -- an order of magnitude cheaper than the packet measurement
+ * `probeVideo` already performs on the same file (670 ms), and 10x cheaper than
+ * the real mux (320 ms). Cost does not grow with the file: nothing past the
+ * first frame is ever read.
+ *
+ * `outPath` must carry the caller's `output` extension and is disposable: it is
+ * written to (a header, one frame, a trailer -- a few hundred KB at 4K) and
+ * never read. Returns the reason instead of throwing, because the caller has a
+ * far better error to throw than ffmpeg's stderr. A missing binary still throws:
+ * that is not a verdict on the video. */
+export async function probeMuxFeasibility(
+  video: string,
+  outPath: string,
+  ffmpegPath: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await runProcess(ffmpegPath, [
+      "-y",
+      "-v", "error",
+      "-i", video,
+      "-f", "lavfi",
+      "-i", MUX_PROBE_SILENCE,
+      "-map", "0:V",
+      "-map", "1:a",
+      "-c:v", "copy",
+      "-c:a", "aac",
+      "-frames:v", "1",
+      outPath,
+    ]);
+    return { ok: true };
+  } catch (err) {
+    // A non-zero exit is the ANSWER (this container cannot hold this picture).
+    // Anything else -- ffmpeg missing, a timeout -- is not a verdict on the
+    // video and must not be reported as one.
+    if (err instanceof FfmpegError) {
+      // The FIRST lines, not FfmpegError's usual LAST three. Under `-v error`
+      // ffmpeg prints the CAUSE first ("Only VP8 or VP9 or AV1 video ... are
+      // supported for WebM."; "dimensions not set"; "Could not write header")
+      // and the CONSEQUENCES after it ("Task finished with error code -22",
+      // "Nothing was written into output file"). Quoting the tail hands the user
+      // three lines of downstream noise and throws away the one sentence that
+      // tells them what is actually wrong with their file.
+      const lines = err.stderrTail.trim().split("\n").filter((l) => l.trim().length > 0);
+      return { ok: false, reason: lines.slice(0, 3).join(" | ") };
+    }
+    throw err;
+  }
 }
 
 /** Replace a video's audio with `audioPath`, copying the picture untouched.
