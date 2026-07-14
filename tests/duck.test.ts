@@ -964,6 +964,48 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     }
   });
 
+  it("BILLS THE PICTURE, not the container, for a SPARSE MKV whose duration field is backfilled from the container", async () => {
+    // The regression this suite exists for, end to end, against the file that
+    // actually reproduces it: a 10 s picture at 1 fps under a 30 s audio track.
+    //
+    // The picture's packets are sparse, so libavformat cannot establish the video
+    // stream's timing from them and backfills `st->duration` FROM THE CONTAINER.
+    // ffprobe then reports the video stream as 30.128 s long -- the maximum over
+    // all streams, i.e. the AUDIO's length -- while its DURATION tag correctly
+    // says 00:00:10. Reading the field first uploads 30 s of voice for a 10 s
+    // picture, and THE SERVER BILLS THE DURATION OF THE AUDIO IT IS GIVEN: a 3x
+    // overcharge, and a deliverable whose picture freezes two thirds of the way
+    // through.
+    //
+    // Asserted on the bytes actually handed to the transport, because that -- not
+    // any figure this package computes internally -- is what is charged for.
+    const output = join(dir, "sparse_mkv.mp4");
+    const { client, uploadedVoice } = stubClient();
+
+    await duckMusicUnderSpeech({
+      video: fx.videoSparsePictureMkv,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    });
+
+    expect(uploadedVoice).toHaveLength(1);
+    const billedPath = join(dir, "billed_sparse_mkv.m4a");
+    await writeFile(billedPath, uploadedVoice[0]!.bytes);
+    const billed = await probeVideo(billedPath, "ffprobe");
+    // The picture's 10 s (plus at most the last frame's 1 s of display time at
+    // 1 fps), NEVER the container's 30 s.
+    expect(billed.durationSeconds).toBeGreaterThan(9);
+    expect(billed.durationSeconds).toBeLessThan(11.5);
+
+    // ...and the deliverable is as long as the picture, so billed == delivered.
+    const delivered = await probeVideo(output, "ffprobe");
+    expect(delivered.videoDurationSeconds!).toBeLessThan(11.5);
+    expect(delivered.durationSeconds).toBeLessThan(11.5);
+  });
+
   it("accepts a video whose PICTURE is under the cap even though its container runs over it", async () => {
     // 350 s of picture under 365 s of audio (Matroska). The backend gates on the
     // video stream's duration -- audio_ducking.py, whose comments cite an

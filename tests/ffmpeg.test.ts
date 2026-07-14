@@ -14,15 +14,30 @@ import { hasFfmpeg, makeFixtures } from "./fixtures.js";
  * No real file on hand produces it -- MP4/MOV/TS carry the field, Matroska/WebM
  * carry the tag, and a container with neither also carries no format.duration,
  * so probeVideo rejects it earlier -- so the missing pieces are removed from a
- * real probe instead. `breakPacketCount` additionally deletes `avg_frame_rate`,
- * which is what makes the packet MEASUREMENT impossible too. */
-async function fakeFfprobe(dir: string, opts: { breakPacketCount?: boolean }): Promise<string> {
-  const path = join(dir, `fake_ffprobe_${opts.breakPacketCount ? "unmeasurable" : "measurable"}.mjs`);
+ * real probe instead.
+ *
+ * `unmeasurable` additionally blanks the PACKET query, which is the last resort
+ * probeVideo falls through to: with no timestamped packets either, the picture's
+ * length cannot be established by any means at all, and the only safe answer is
+ * to refuse. (It used to suffice to delete `avg_frame_rate`, because the
+ * measurement was packets/frame-rate; the measurement now reads packet
+ * timestamps, which no frame rate can break.) */
+async function fakeFfprobe(dir: string, opts: { unmeasurable?: boolean }): Promise<string> {
+  const path = join(dir, `fake_ffprobe_${opts.unmeasurable ? "unmeasurable" : "measurable"}.mjs`);
   await writeFile(
     path,
     `#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-const res = spawnSync("ffprobe", process.argv.slice(2), { encoding: "utf8" });
+const argv = process.argv.slice(2);
+${opts.unmeasurable
+  ? `// The packet query -- probeVideo's measurement of last resort. A container
+// whose picture carries no timestamped packets answers it with nothing.
+if (argv.some((a) => a.startsWith("packet="))) {
+  process.stdout.write("");
+  process.exit(0);
+}`
+  : ""}
+const res = spawnSync("ffprobe", argv, { encoding: "utf8" });
 if (res.status !== 0) {
   process.stderr.write(res.stderr ?? "");
   process.exit(res.status ?? 1);
@@ -35,11 +50,10 @@ try {
     for (const key of Object.keys(s.tags ?? {})) {
       if (key.toUpperCase().startsWith("DURATION")) delete s.tags[key];
     }
-    ${opts.breakPacketCount ? "delete s.avg_frame_rate;" : ""}
   }
   out = JSON.stringify(parsed);
 } catch {
-  // not JSON (e.g. a -of default query): pass it through untouched
+  // not JSON (e.g. a -of csv packet query): pass it through untouched
 }
 process.stdout.write(out);
 `,
@@ -112,6 +126,67 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     expect(probe.videoDurationSeconds!).toBeLessThan(355);
   });
 
+  it("probeVideo prefers the DURATION TAG over a `duration` field BACKFILLED FROM THE CONTAINER (sparse MKV)", async () => {
+    // THE BUG. A 10 s picture at 1 fps under a 30 s audio track, plain Matroska.
+    // Because the picture's packets are sparse, libavformat cannot establish the
+    // stream's timing from them and backfills `st->duration` FROM THE CONTAINER --
+    // so ffprobe emits a video-stream `duration` FIELD of 30.128 (the max over all
+    // streams, i.e. the AUDIO's length) alongside a DURATION TAG of 00:00:10 (the
+    // picture's true length). The file carries BOTH.
+    //
+    // A cascade that reads the field first therefore bills 30 s for a 10 s picture.
+    // The tag is authored per-track by the muxer and is never synthesized from the
+    // container, so it -- not the field -- is the picture's own length.
+    const probe = await probeVideo(fx.videoSparsePictureMkv, "ffprobe");
+    expect(probe.durationSeconds).toBeGreaterThan(29); // the container: the audio's 30 s
+    expect(probe.videoDurationSeconds!).toBeGreaterThan(9); // the picture: 10 s
+    expect(probe.videoDurationSeconds!).toBeLessThan(11); // NOT the container's 30 s
+  });
+
+  it("probeVideo MEASURES the picture when a backfilled field is all the container offers (sparse MPEG-TS)", async () => {
+    // The cross-check firing, on a real file. MPEG-TS has no DURATION tag to fall
+    // back on, so preferring the tag does NOT save it: ffprobe reports the video
+    // stream's `duration` as 29.767978 -- exactly format.duration, the audio's
+    // length -- for a 10 s picture. It offers no `nb_frames` either, so there is
+    // no per-track frame accounting to say the demuxer ever tracked this stream
+    // separately: the field is indistinguishable from the container's.
+    //
+    // That is the signature the guard fires on, and it falls through to MEASURING
+    // the span the picture's own packets occupy. (`avg_frame_rate` is `0/0` here,
+    // which is precisely why the old packets/frame-rate measurement returned null
+    // for this container and left the backfilled 29.8 s in place to be billed.)
+    const probe = await probeVideo(fx.videoSparsePictureTs, "ffprobe");
+    expect(probe.durationSeconds).toBeGreaterThan(29); // the container: the audio's length
+    expect(probe.videoDurationSeconds!).toBeGreaterThan(9); // the picture, MEASURED: 10 s
+    expect(probe.videoDurationSeconds!).toBeLessThan(11); // NOT the backfilled 29.8 s
+  });
+
+  it("probeVideo trusts the per-stream field where it is genuinely the track's own (edit-list mp4)", async () => {
+    // The other side of the guard, and the reason it keys on the FIELD's
+    // relationship to the container rather than on a frame-count cross-check.
+    //
+    // `ffmpeg -ss 2 -i in -c copy out.mp4` -- and every iPhone clip -- writes an
+    // EDIT LIST: all 250 coded frames of the 10 s source are retained, while the
+    // presentation is trimmed to 8 s. `-c:v copy` applies the edit list, so 8 s is
+    // what the mux delivers and 8 s is the correct bill. The `duration` field says
+    // 8 s and is RIGHT; `nb_frames / avg_frame_rate` says 10 s and is WRONG.
+    // A cross-check that measured on that disagreement would bill 10 s for an 8 s
+    // deliverable -- a 1.25x overbill on the commonest video there is.
+    const elst = join(dir, "edit_list.mp4");
+    await runProcess("ffmpeg", ["-y", "-v", "error", "-ss", "2", "-i", fx.videoAudioOutlivesPicture, "-c", "copy", elst]);
+
+    const probe = await probeVideo(elst, "ffprobe");
+    const field = Number(
+      (await runProcess("ffprobe", [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", elst,
+      ])).stdout.trim(),
+    );
+    // Whatever the edit list trimmed it to, the picture's reported duration is
+    // the FIELD -- the edit-list-adjusted figure the mux will honour.
+    expect(probe.videoDurationSeconds!).toBeCloseTo(field, 1);
+  });
+
   it("probeVideo MEASURES the picture when the container carries neither a duration field nor a DURATION tag", async () => {
     // Tier 3. `fakeFfprobe` is the real ffprobe with every stream `duration`
     // and `DURATION` tag stripped from its JSON -- the one shape left for which
@@ -125,13 +200,14 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
   });
 
   it("probeVideo REFUSES to guess the picture's duration rather than falling back to the container's", async () => {
-    // Tier 4. Same stripped ffprobe, but the packet measurement is broken too
-    // (no avg_frame_rate), so the picture's length cannot be established by any
-    // means. The old code answered format.duration here -- the audio's length,
-    // the very number duck.ts would then BILL the customer for. Refusing is the
-    // only safe answer, and it costs nothing: this runs before any upload.
+    // The last tier. Same stripped ffprobe, but the packet measurement is broken
+    // too (the picture answers the packet query with nothing), so its length
+    // cannot be established by any means. The old code answered format.duration
+    // here -- the audio's length, the very number duck.ts would then BILL the
+    // customer for. Refusing is the only safe answer, and it costs nothing: this
+    // runs before any upload.
     await expect(
-      probeVideo(fx.videoAudioOutlivesPicture, await fakeFfprobe(dir, { breakPacketCount: true })),
+      probeVideo(fx.videoAudioOutlivesPicture, await fakeFfprobe(dir, { unmeasurable: true })),
     ).rejects.toThrow(/Could not determine how long the picture/);
   });
 

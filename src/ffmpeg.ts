@@ -82,6 +82,13 @@ interface FfprobeStream {
   codec_type?: string;
   codec_name?: string;
   duration?: string;
+  /** Per-track frame accounting. Its VALUE is not a usable cross-check (see
+   * `framesAccountedPerTrack`), but its PRESENCE says the demuxer tracks this
+   * stream's samples individually — which is what makes its `duration` its own
+   * rather than a copy of the container's. */
+  nb_frames?: string;
+  avg_frame_rate?: string;
+  r_frame_rate?: string;
   tags?: Record<string, string>;
   disposition?: { attached_pic?: number };
 }
@@ -106,13 +113,11 @@ function parseDurationValue(value: string): number | null {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
-/** Matroska and WebM never emit a per-stream `duration` FIELD — but they do
- * carry the stream's own duration as a TAG (`DURATION`, or a language-suffixed
- * `DURATION-eng`), written by every mainstream muxer. Reading it is what keeps
- * the picture's length knowable for those containers without paying for a
- * decode, and without ever borrowing the container's max-over-all-streams
- * figure, which for a video whose audio outlives its picture is the AUDIO's
- * length. */
+/** Matroska/WebM carry each track's own length as a TAG (`DURATION`, or a
+ * language-suffixed `DURATION-eng`), AUTHORED PER TRACK by the muxer. Unlike
+ * the `duration` FIELD (see `pictureDurationSeconds`), a tag is never
+ * synthesized from the container, so it stays correct even when libavformat
+ * cannot derive the track's timing from its packets. */
 function durationTagSeconds(tags: Record<string, string> | undefined): number | null {
   if (tags === undefined) return null;
   for (const [key, value] of Object.entries(tags)) {
@@ -133,12 +138,61 @@ function parseRational(value: string | undefined): number | null {
   return n / d;
 }
 
-/** Last resort: MEASURE the picture, by counting its packets. `-count_packets`
- * demuxes but never decodes (0.02 s on a real fixture), so this stays cheap
- * enough to sit on the call path of a container that carries neither a
- * per-stream duration field nor a DURATION tag. Returns null if even this
- * cannot produce a number — a picture with no packets, or no frame rate. */
-async function measurePictureDuration(
+/** How far a duration may legitimately sit from another measure of the same
+ * picture: the LAST FRAME IS DISPLAYED FOR 1/fps, so a figure that counts it
+ * and one that stops at its presentation time differ by exactly that much (a
+ * whole second at 1 fps). Plus a hair for rounding. Clamped so an absurd frame
+ * rate cannot widen it without bound; 0.5 s when the frame rate is unknown,
+ * which is itself a symptom (MPEG-TS reports `avg_frame_rate=0/0`). */
+function frameTolerance(stream: FfprobeStream): number {
+  const fps = parseRational(stream.avg_frame_rate) ?? parseRational(stream.r_frame_rate);
+  if (fps === null) return 0.5;
+  return Math.min(Math.max(1 / fps + 0.05, 0.05), 2);
+}
+
+/** Does the demuxer account for this track's frames INDIVIDUALLY?
+ *
+ * Deliberately a presence check, never a value check. `nb_frames / avg_frame_rate`
+ * looks like a free second opinion on the picture's length, and the temptation
+ * is to compare the two and measure on disagreement — but it is not one, in
+ * either direction:
+ *
+ *  - For MP4/MOV it is CIRCULAR. ffprobe derives `avg_frame_rate` as
+ *    nb_frames / duration, so the quotient reproduces the `duration` field by
+ *    construction and can never contradict it — including when the field is
+ *    wrong (a gappy VFR mp4 with 15 frames and a 0.6 s field reports
+ *    avg_frame_rate=25, and 15/25 = 0.6 "agrees").
+ *  - Where it is NOT circular it is WRONG. An edit-list mp4 (`ffmpeg -ss -c copy`,
+ *    and every iPhone clip) keeps all 250 coded frames of a 10 s source while
+ *    presenting 8 s: nb_frames/avg_frame_rate = 10 s, the field says 8 s, and the
+ *    FIELD is right — `-c:v copy` applies the edit list, so 8 s is what the mux
+ *    delivers. Measuring on that "disagreement" would bill 10 s for an 8 s
+ *    deliverable: a 1.25x overbill on the single most common video on earth.
+ *
+ * What the FIELD's presence does tell us is that this container tracks the
+ * stream's samples on their own — which is exactly the property that makes its
+ * `duration` the stream's own rather than a copy of the container's. */
+function framesAccountedPerTrack(stream: FfprobeStream): boolean {
+  return positiveSeconds(stream.nb_frames) !== null;
+}
+
+/** MEASURE the picture: the span its own packets occupy on the timeline,
+ * `max(timestamp + packet duration) - min(timestamp)`.
+ *
+ * Timestamps, not a packet COUNT divided by a frame rate: MPEG-TS reports
+ * `avg_frame_rate=0/0`, so the old count/fps measurement returned null for
+ * exactly the container that needs measuring most. Falls back from `pts_time`
+ * to `dts_time` because AVI carries no presentation timestamps at all
+ * (`pts_time=N/A` on every packet), and takes min/max rather than
+ * first/last because B-frames put pts out of order and MPEG-TS starts its
+ * clock at an arbitrary offset (1.4 s, routinely).
+ *
+ * Demuxes, never decodes: 0.05 s (mp4) / 0.08 s (mkv) / 0.15 s (ts) on a
+ * 287 MB 4K file. Only containers that offer no trustworthy per-track metadata
+ * (MPEG-TS, FLV) ever reach it; MP4/MOV/MKV/WebM/AVI are answered from the
+ * probe already in hand. Returns null when the picture has no timestamped
+ * packets at all, which is a file with no picture to bill for. */
+async function measurePictureSpan(
   video: string,
   streamIndex: number | undefined,
   ffprobePath: string,
@@ -149,48 +203,89 @@ async function measurePictureDuration(
   const { stdout } = await runProcess(ffprobePath, [
     "-v", "error",
     "-select_streams", selector,
-    "-count_packets",
-    "-show_entries", "stream=nb_read_packets,avg_frame_rate",
-    "-print_format", "json",
+    "-show_entries", "packet=pts_time,dts_time,duration_time",
+    "-of", "csv=p=0",
     video,
   ]);
-  let parsed: { streams?: Array<{ nb_read_packets?: string; avg_frame_rate?: string }> };
-  try {
-    parsed = JSON.parse(stdout) as typeof parsed;
-  } catch {
-    return null;
+  let start: number | null = null;
+  let end: number | null = null;
+  for (const line of stdout.split("\n")) {
+    if (line.length === 0) continue;
+    const [ptsText, dtsText, durText] = line.split(",");
+    const pts = Number(ptsText);
+    const dts = Number(dtsText);
+    // "N/A" -> NaN. AVI has no pts; prefer pts, fall back to dts.
+    const at = Number.isFinite(pts) ? pts : Number.isFinite(dts) ? dts : null;
+    if (at === null) continue;
+    const dur = Number(durText);
+    const until = at + (Number.isFinite(dur) && dur > 0 ? dur : 0);
+    if (start === null || at < start) start = at;
+    if (end === null || until > end) end = until;
   }
-  const stream = parsed.streams?.[0];
-  if (stream === undefined) return null;
-  const packets = Number(stream.nb_read_packets);
-  const fps = parseRational(stream.avg_frame_rate);
-  if (!Number.isFinite(packets) || packets <= 0 || fps === null) return null;
-  return packets / fps;
+  if (start === null || end === null) return null;
+  const span = end - start;
+  return span > 0 ? span : null;
 }
 
-/** The PICTURE's own duration, established from the picture and nothing else.
+/** The PICTURE's own duration — the length of picture the viewer receives, and
+ * the length the ducking API bills on. NEVER the container's `format.duration`,
+ * which is ffprobe's maximum over ALL streams: for a video whose audio outlives
+ * its picture (routine encoder padding) that is the AUDIO's length, and billing
+ * it overcharges for seconds nobody receives.
  *
- * There is deliberately NO fallback to the container's `format.duration` here.
- * That number is ffprobe's maximum over all streams, so for a video whose audio
- * track outlives its picture (routine encoder padding) it is the AUDIO's
- * length — and duck.ts guards, BILLS and muxes on this figure. Substituting the
- * container's duration silently overcharges the customer for seconds nobody
- * receives, and falsely rejects legal videos at the 360 s cap. Better to fail
- * loudly (the caller sees a VideoKitError, before anything is uploaded or
- * charged) than to quietly bill on a number that came from another stream.
+ * The sources, in the order they can be trusted:
  *
- * Three tiers, cheapest first — in practice tier 1 covers MP4/MOV/TS/AVI and
- * tier 2 covers Matroska/WebM, so no mainstream container pays for tier 3. */
+ *  1. The per-track DURATION TAG (Matroska/WebM). Authored per track by the
+ *     muxer; never synthesized from the container.
+ *
+ *  2. The per-stream `duration` FIELD (MP4/MOV/AVI). Genuinely the track's own
+ *     -- and edit-list-adjusted, so it is what `-c:v copy` will actually deliver
+ *     -- EXCEPT when it is a container backfill. When libavformat cannot
+ *     establish a track's timing from its packets (a picture whose packets are
+ *     sparse in the byte stream: low frame rate, few frames) it fills
+ *     `st->duration` in FROM THE CONTAINER'S Duration element, and ffprobe then
+ *     prints a video-stream `duration` that is really the max over all streams,
+ *     i.e. the audio's length. An ordinary ffmpeg-written 10 s/1 fps MKV under a
+ *     30 s audio track carries BOTH: `duration='30.023000'` (the audio's) and
+ *     `tags.DURATION='00:00:10.000000000'` (the picture's). Preferring the tag
+ *     is what keeps that file from being billed at 3.3x.
+ *
+ *     A backfilled field is spotted by what it is indistinguishable from: it
+ *     equals `format.duration`, and its stream carries no per-track frame
+ *     accounting (see `framesAccountedPerTrack`) to say the demuxer ever
+ *     tracked it separately. MPEG-TS and FLV land here -- they have no tag to
+ *     rescue them, which is why tier 3 exists.
+ *
+ *  3. MEASURE the picture from its own packets. Authoritative and
+ *     container-agnostic.
+ *
+ * There is deliberately no tier 4. A picture whose length cannot be established
+ * makes probeVideo THROW, before anything is uploaded or charged, rather than
+ * report a number that came from another stream. */
 async function pictureDurationSeconds(
   video: string,
   stream: FfprobeStream,
+  containerSeconds: number,
   ffprobePath: string,
 ): Promise<number | null> {
-  const own = positiveSeconds(stream.duration);
-  if (own !== null) return own;
+  const tolerance = frameTolerance(stream);
+  // The picture can never outlive the container: format.duration is the maximum
+  // over ALL streams, this one included. A metadata figure that claims otherwise
+  // is not this stream's, whatever it says -- fall through and measure.
+  const plausible = (seconds: number | null): seconds is number =>
+    seconds !== null && seconds <= containerSeconds + tolerance;
+
   const tagged = durationTagSeconds(stream.tags);
-  if (tagged !== null) return tagged;
-  return measurePictureDuration(video, stream.index, ffprobePath);
+  if (plausible(tagged)) return tagged;
+
+  const field = positiveSeconds(stream.duration);
+  const looksLikeTheContainers =
+    field !== null &&
+    Math.abs(field - containerSeconds) <= tolerance &&
+    !framesAccountedPerTrack(stream);
+  if (plausible(field) && !looksLikeTheContainers) return field;
+
+  return measurePictureSpan(video, stream.index, ffprobePath);
 }
 
 export async function probeVideo(video: string, ffprobePath: string): Promise<ProbeResult> {
@@ -224,12 +319,17 @@ export async function probeVideo(video: string, ffprobePath: string): Promise<Pr
   // substituting a figure that may belong to the audio track.
   let videoDurationSeconds: number | null = null;
   if (videoStream !== undefined) {
-    videoDurationSeconds = await pictureDurationSeconds(video, videoStream, ffprobePath);
+    videoDurationSeconds = await pictureDurationSeconds(
+      video,
+      videoStream,
+      durationSeconds,
+      ffprobePath,
+    );
     if (videoDurationSeconds === null) {
       throw new VideoKitError(
         `Could not determine how long the picture in ${video} runs (its video stream carries ` +
-          `no duration, no DURATION tag, and no countable packets). Refusing to guess: the ` +
-          `ducking API bills on this figure, and the container's own duration is the longest ` +
+          `no usable duration, no DURATION tag, and no timestamped packets). Refusing to guess: ` +
+          `the ducking API bills on this figure, and the container's own duration is the longest ` +
           `of ALL its streams, so guessing from it can overcharge you. Re-encode the file ` +
           `(e.g. \`ffmpeg -i in -c copy out.mp4\`) and try again.`,
       );

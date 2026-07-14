@@ -25,6 +25,8 @@ export async function makeFixtures(dir: string): Promise<{
   videoAudioOutlivesPicture: string;
   videoAudioOutlivesPictureMkv: string;
   videoAudioOutlivesPictureWebm: string;
+  videoSparsePictureMkv: string;
+  videoSparsePictureTs: string;
   videoLongPictureLongerAudioMkv: string;
   audioOnly: string;
   audioWithCoverArt: string;
@@ -113,17 +115,69 @@ export async function makeFixtures(dir: string): Promise<{
     "-c:a", "libopus",
     videoAudioOutlivesPictureWebm,
   ]);
-  // A LEGAL video the cap guard must not reject: 350 s of picture (under the
+  // THE FIXTURE THAT REPRODUCES THE BILLING BUG. 10 s of picture at 1 fps under
+  // a 30 s audio track, in Matroska.
+  //
+  // The point is the SPARSITY of the picture, not the container. When
+  // libavformat cannot establish a video stream's timing from its packets --
+  // which is what happens when the picture's packets are sparse in the byte
+  // stream (low frame rate, few frames) -- it BACKFILLS `st->duration` from the
+  // container's Duration element. ffprobe then prints a video-stream `duration`
+  // FIELD equal to format.duration, i.e. the maximum over all streams, i.e. the
+  // AUDIO's length:
+  //
+  //   stream 0 video  duration='30.128000'  tags={'DURATION': '00:00:10.000000000'}
+  //                   ^^^ the AUDIO's length          ^^^ the picture's TRUE length
+  //
+  // So the file carries BOTH numbers, and a cascade that reads the FIELD first
+  // takes the audio's. Billed at 30 s for a 10 s picture: a 3x overcharge, and a
+  // deliverable whose picture freezes at 10 s.
+  //
+  // The older `audio_outlives_picture.mkv` above CANNOT catch this: at 10 fps its
+  // packets are dense enough that ffprobe establishes the stream's timing itself
+  // and emits NO field at all, so it lands on the DURATION tag by accident and
+  // passes even with the bug present. Sparsity is the whole trigger.
+  const videoSparsePictureMkv = join(dir, "sparse_picture.mkv");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=10:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    videoSparsePictureMkv,
+  ]);
+  // The same backfill, in MPEG-TS -- where there is NO DURATION tag to fall back
+  // on. ffprobe reports duration='29.767978' (the container's) for a 10 s
+  // picture, carries no tag, no nb_frames, and `avg_frame_rate=0/0`, which is
+  // what defeats a packets/frame-rate measurement as well. The picture's length
+  // can only be recovered by MEASURING the span its packets occupy. Probe-level
+  // fixture only: a 1 fps mpegts is degenerate enough that ffmpeg cannot re-read
+  // its codec parameters ("no TS found at start of file"), so it cannot be muxed.
+  const videoSparsePictureTs = join(dir, "sparse_picture.ts");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=10:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=30:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    videoSparsePictureTs,
+  ]);
+  // A LEGAL video the cap guard must not reject: 352 s of picture (under the
   // API's 360 s limit, and the only figure the backend gates on) under 365 s of
   // audio (over it). The backend accepts exactly this -- audio_ducking.py gates
   // on the video stream's duration, and its comments cite a real 358 s picture /
   // 361 s audio case. A guard reading the container's duration instead reports
-  // "runs 365.0s" and refuses a video the API would have taken. Matroska,
-  // because that is where the missing per-stream duration bites. Cheap: 1 fps at
-  // 64x36, 8 kHz mono audio.
+  // "runs 365.1s" and refuses a video the API would have taken.
+  //
+  // A SLIDESHOW: one frame per 4 s (88 frames spanning 352 s), which is both the
+  // realistic shape and, crucially, sparse enough to TRIGGER THE BACKFILL --
+  // ffprobe reports this video stream's `duration` FIELD as 365.128 (the audio's,
+  // i.e. the container's) while its DURATION TAG says 00:05:52 (352 s).
+  //
+  // The previous version of this fixture ran at 1 fps for 350 s, and at 350 frames
+  // ffprobe establishes the stream's timing itself and emits NO field at all -- so
+  // it landed on the DURATION tag by accident and the cap test passed even with
+  // the bug present. It asserted the right property against a fixture that could
+  // not exercise it. It is also cheaper this way: 88 frames instead of 350.
   const videoLongPictureLongerAudioMkv = join(dir, "long_picture_longer_audio.mkv");
   run([
-    "-f", "lavfi", "-i", "testsrc=duration=350:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "testsrc=duration=350:size=64x36:rate=1/4",
     "-f", "lavfi", "-i", "sine=frequency=440:duration=365:sample_rate=8000",
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
     videoLongPictureLongerAudioMkv,
@@ -179,6 +233,8 @@ export async function makeFixtures(dir: string): Promise<{
     videoAudioOutlivesPicture,
     videoAudioOutlivesPictureMkv,
     videoAudioOutlivesPictureWebm,
+    videoSparsePictureMkv,
+    videoSparsePictureTs,
     videoLongPictureLongerAudioMkv,
     audioOnly,
     audioWithCoverArt,
