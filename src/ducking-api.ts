@@ -79,7 +79,8 @@ export async function awaitDuckingResult(
   for (;;) {
     opts.signal?.throwIfAborted();
 
-    const res = await client.request(`/v1/tasks/${taskId}`);
+    const init: RequestInit | undefined = opts.signal ? { signal: opts.signal } : undefined;
+    const res = await client.request(`/v1/tasks/${encodeURIComponent(taskId)}`, init);
     const body = (await res.json()) as TaskBody;
 
     if (body.status === "succeeded") {

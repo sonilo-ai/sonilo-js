@@ -77,6 +77,15 @@ the video must have an audio track, and it must run no longer than **360
 seconds**. Either failure throws; the kit never quietly falls back to an
 un-ducked mix. Use `mixWithVideo` for silent or longer videos.
 
+If the final, purely-local step — remuxing the ducked audio onto your
+picture — fails after the API call has already run (for example, `output`'s
+extension names a container that can't hold your video's codec, such as
+`.webm` for an h264 source), the kit does not throw away the mix you already
+paid for. It saves the downloaded ducked audio to `<output>.ducked.wav` and
+throws an error naming that path, so you can fix the local problem (e.g.
+pick a working container) and remux with ffmpeg yourself instead of calling
+`duckMusicUnderSpeech` again and being billed a second time.
+
 ## Errors
 
 `VideoKitError` (invalid arguments, unreadable video), `FfmpegNotFoundError`

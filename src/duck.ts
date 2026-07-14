@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { SoniloClient } from "sonilo";
 import {
   awaitDuckingResult,
@@ -112,12 +112,50 @@ export async function duckMusicUnderSpeech(
       timeoutMs,
       ...(signal ? { signal } : {}),
     });
+    // Only an extracted audio track is ever uploaded, so the server should
+    // never answer with anything but "audio". Assert the contract instead of
+    // silently ignoring outputType.
+    if (result.outputType !== "audio") {
+      throw new VideoKitError(
+        `The ducking API returned output_type "${result.outputType}" for task ${taskId}, ` +
+          `but only "audio" is expected: this client always uploads just the extracted ` +
+          `audio track, never the picture.`,
+      );
+    }
 
     // The API returns the finished mix already delivered at -14 LUFS / -1 dBTP,
     // so there is no local loudness pass to run.
     const duckedPath = join(workDir, "ducked.wav");
     await downloadDuckedMix(result.outputUrl, duckedPath, fetchFn, signal);
-    await muxVideoWithAudio(video, duckedPath, output, probe.durationSeconds, ffmpegPath);
+
+    // Mux into workDir first, never straight to `output`: muxVideoWithAudio
+    // writes with `-y`, so a failure partway through (disk full; or a
+    // container that can't hold the copied video codec, e.g. h264 into
+    // .webm) would otherwise leave a truncated/empty file where the caller
+    // expects a deliverable. The mux target keeps `output`'s extension so
+    // ffmpeg infers the same container it would have used for `output`.
+    const muxedPath = join(workDir, `muxed${extname(output)}`);
+    try {
+      await muxVideoWithAudio(video, duckedPath, muxedPath, probe.durationSeconds, ffmpegPath);
+    } catch (err) {
+      // The ducking API call has already been billed on the video's
+      // duration. A purely local mux failure must not also destroy the mix
+      // that was just paid for — rescue it next to `output` before the
+      // `finally` below deletes workDir, and say so in the error.
+      const recoveredPath = `${output}.ducked.wav`;
+      await copyFile(duckedPath, recoveredPath);
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new VideoKitError(
+        `Muxing the ducked audio onto ${video} failed, after the ducking API had already ` +
+          `run and been billed for this video's duration. The ducked audio was saved to ` +
+          `${recoveredPath} so you can retry the mux locally (e.g. with a different output ` +
+          `container/path) instead of calling duckMusicUnderSpeech again, which would incur ` +
+          `another charge. Original error: ${reason}`,
+      );
+    }
+    // Cross-filesystem safe: workDir lives under tmpdir(), which may not
+    // share a filesystem with `output` (rename can fail with EXDEV there).
+    await copyFile(muxedPath, output);
 
     return output;
   } finally {

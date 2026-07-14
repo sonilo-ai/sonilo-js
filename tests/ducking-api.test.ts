@@ -118,6 +118,48 @@ describe("awaitDuckingResult", () => {
     ).rejects.toThrow("caller went away");
     expect(calls).toHaveLength(0);
   });
+
+  it("aborts an in-flight poll request instead of waiting for it to settle", async () => {
+    // A stub whose `request` never resolves on its own: it only settles when
+    // the signal it was handed aborts. If awaitDuckingResult forgot to pass
+    // `signal` into the poll request (as it used to), this promise would
+    // never reject and the test would time out instead of resolving promptly.
+    let requestStarted!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const client: DuckingClient = {
+      request(_path, init) {
+        requestStarted();
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(init.signal!.reason as Error);
+          });
+        });
+      },
+    };
+
+    const controller = new AbortController();
+    const result = awaitDuckingResult(client, "t_1", {
+      pollIntervalMs: 1000,
+      timeoutMs: 60_000,
+      sleep: NO_SLEEP,
+      signal: controller.signal,
+    });
+
+    await startedPromise; // the poll request is now in flight
+    controller.abort(new Error("caller went away mid-poll"));
+
+    await expect(result).rejects.toThrow("caller went away mid-poll");
+  });
+
+  it("escapes special characters in the task id", async () => {
+    const { client, calls } = stubClient([
+      { body: { status: "succeeded", output_url: "https://r2.example/ducked.wav", output_type: "audio" } },
+    ]);
+    await awaitDuckingResult(client, "abc?x=1#y", opts);
+    expect(calls[0]!.path).toBe("/v1/tasks/abc%3Fx%3D1%23y");
+  });
 });
 
 describe("downloadDuckedMix", () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -33,6 +33,21 @@ function stubClient(taskBody: Record<string, unknown> = {
 /** Stub download: hands back the fixture wav, standing in for the R2 object. */
 function stubFetch(bytes: Uint8Array) {
   return (async () => new Response(bytes)) as unknown as typeof globalThis.fetch;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Every mkdtemp(tmpdir(), "sonilo-video-kit-duck-") entry currently in tmpdir(). */
+async function duckWorkDirs(): Promise<string[]> {
+  const entries = await readdir(tmpdir());
+  return entries.filter((e) => e.startsWith("sonilo-video-kit-duck-"));
 }
 
 describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", () => {
@@ -155,5 +170,96 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     await expect(
       duckMusicUnderSpeech({ video: fx.videoWithAudio, audio: fx.musicMp3, output: "", client }),
     ).rejects.toThrow(VideoKitError);
+  });
+
+  it("rejects when audio is missing", async () => {
+    const { client, calls } = stubClient();
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: new Uint8Array(0),
+        output: join(dir, "never_no_audio.mp4"),
+        client,
+      }),
+    ).rejects.toThrow(/audio is required/);
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
+  });
+
+  it("rejects when the API returns an output_type other than audio", async () => {
+    const { client } = stubClient({
+      status: "succeeded",
+      output_url: "https://r2.example/ducked.wav",
+      output_type: "video",
+    });
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output: join(dir, "never_wrong_output_type.mp4"),
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).rejects.toThrow(/output_type "video"/);
+  });
+
+  it("cleans up the temp work directory on both success and failure", async () => {
+    const before = await duckWorkDirs();
+
+    const { client: okClient } = stubClient();
+    await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output: join(dir, "cleanup_success.mp4"),
+      client: okClient,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    });
+    expect(await duckWorkDirs()).toEqual(before);
+
+    const { client: failClient } = stubClient({
+      status: "failed",
+      error: { code: "DUCKING_FAILED", message: "audio processing failed" },
+      refunded: true,
+    });
+    await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output: join(dir, "cleanup_failure.mp4"),
+      client: failClient,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch(() => {});
+    expect(await duckWorkDirs()).toEqual(before);
+  });
+
+  it("preserves the paid-for ducked mix and leaves no file at output when the local mux fails", async () => {
+    // h264 (the fixture's video codec) cannot be copied into a WebM
+    // container: ffmpeg's webm muxer only accepts VP8/VP9/AV1. `-c:v copy`
+    // therefore fails at the mux step specifically -- probing and audio
+    // extraction don't touch `output`'s extension, so nothing upstream of
+    // the mux call can fail this way. Confirmed manually: `ffmpeg -i
+    // <h264 mp4> -i <wav> -c:v copy -c:a aac out.webm` exits non-zero with
+    // "Only VP8 or VP9 or AV1 video ... are supported for WebM."
+    const output = join(dir, "impossible_container.webm");
+    const { client } = stubClient();
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output,
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const recoveredPath = `${output}.ducked.wav`;
+    expect((err as VideoKitError).message).toContain(recoveredPath);
+
+    expect(await exists(output)).toBe(false); // no corrupt/truncated file at output
+    expect(await exists(recoveredPath)).toBe(true); // the paid-for mix survives
+    expect(new Uint8Array(await readFile(recoveredPath))).toEqual(ducked);
   });
 });
