@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { SoniloClient } from "sonilo";
@@ -9,7 +9,7 @@ import {
   submitDuckingJob,
   type DuckingClient,
 } from "./ducking-api.js";
-import { VideoKitError } from "./errors.js";
+import { DuckingFailedError, VideoKitError } from "./errors.js";
 import { extractAudio, muxVideoWithAudio, probeVideo } from "./ffmpeg.js";
 
 /** The ducking API rejects voice, video, and music tracks longer than this. */
@@ -66,7 +66,11 @@ export async function duckMusicUnderSpeech(
     ffmpegPath = "ffmpeg",
     ffprobePath = "ffprobe",
   } = options;
-  const fetchFn = (options.fetch ?? globalThis.fetch).bind(globalThis);
+  // Bind ONLY the default: undici's globalThis.fetch throws "Illegal
+  // invocation" when detached from globalThis, but a caller-supplied fetch is
+  // theirs -- rebinding its `this` to globalThis breaks a bound method (a proxy
+  // or agent wrapper's `fetch`), which is exactly what such wrappers are.
+  const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
 
   if (!video) throw new VideoKitError("video is required");
   if (!output) throw new VideoKitError("output is required");
@@ -165,32 +169,46 @@ export async function duckMusicUnderSpeech(
       typeof audio === "string" ? new Uint8Array(await readFile(audio)) : audio;
     const musicFilename = typeof audio === "string" ? basename(audio) : "music.mp3";
 
+    // THE ACCOUNT IS CHARGED HERE. The server charges in the POST handler
+    // (calculate_and_charge, before the background job is even spawned), and it
+    // only refunds when its OWN processing fails. So from this line on, every
+    // failure -- a poll that 4xxs, a download that stays broken, an abort, a
+    // timeout -- is a failure that costs the customer money while the task keeps
+    // running server-side, finishes, and uploads a mix they have paid for.
+    // Nothing below may throw away the handle to it: see rethrowWithTaskId.
     const taskId = await submitDuckingJob(
       client,
       { bytes: voiceBytes, filename: "voice.m4a" },
       { bytes: musicBytes, filename: musicFilename },
       signal,
     );
-    const result = await awaitDuckingResult(client, taskId, {
-      pollIntervalMs,
-      timeoutMs,
-      ...(signal ? { signal } : {}),
-    });
-    // Only an extracted audio track is ever uploaded, so the server should
-    // never answer with anything but "audio". Assert the contract instead of
-    // silently ignoring outputType.
-    if (result.outputType !== "audio") {
-      throw new VideoKitError(
-        `The ducking API returned output_type "${result.outputType}" for task ${taskId}, ` +
-          `but only "audio" is expected: this client always uploads just the extracted ` +
-          `audio track, never the picture.`,
-      );
-    }
 
-    // The API returns the finished mix already delivered at -14 LUFS / -1 dBTP,
-    // so there is no local loudness pass to run.
     const duckedPath = join(workDir, "ducked.wav");
-    await downloadDuckedMix(result.outputUrl, duckedPath, fetchFn, signal);
+    try {
+      const result = await awaitDuckingResult(client, taskId, {
+        pollIntervalMs,
+        timeoutMs,
+        ...(signal ? { signal } : {}),
+      });
+      // Only an extracted audio track is ever uploaded, so the server should
+      // never answer with anything but "audio". Assert the contract instead of
+      // silently ignoring outputType.
+      if (result.outputType !== "audio") {
+        throw new VideoKitError(
+          `The ducking API returned output_type "${result.outputType}" for task ${taskId}, ` +
+            `but only "audio" is expected: this client always uploads just the extracted ` +
+            `audio track, never the picture.`,
+        );
+      }
+
+      // The API returns the finished mix already delivered at -14 LUFS / -1 dBTP,
+      // so there is no local loudness pass to run.
+      await downloadDuckedMix(result.outputUrl, duckedPath, fetchFn, {
+        ...(signal ? { signal } : {}),
+      });
+    } catch (err) {
+      throw rethrowWithTaskId(err, taskId);
+    }
 
     // Mux into workDir first, never straight to `output`: muxVideoWithAudio
     // writes with `-y`, so a failure partway through (disk full; or a
@@ -213,13 +231,74 @@ export async function duckMusicUnderSpeech(
       stage = `Placing the finished mix at ${output}`;
       await placeAtomically(muxedPath, output);
     } catch (err) {
-      await rescueAndThrow(stage, err, duckedPath, output);
+      await rescueAndThrow(stage, err, duckedPath, output, taskId);
     }
 
     return output;
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+/** Plain words for "the API has run, you have been billed, and the mix is still
+ * yours" — the sentence every post-submit failure has to end with. */
+function paidNote(taskId: string): string {
+  return (
+    `You have ALREADY BEEN CHARGED for ducking task ${taskId}: the API bills at submit, and ` +
+    `the task keeps running to completion server-side no matter what happens to this call. ` +
+    `Do not call duckMusicUnderSpeech again for this video -- that submits a NEW task and ` +
+    `charges you a second time. Poll GET /v1/tasks/${taskId} instead (with the same client: ` +
+    `client.request("/v1/tasks/${taskId}")) until it reports "succeeded", and download the ` +
+    `output_url it hands back: that is a re-fetch of the mix you have paid for, not a new charge.`
+  );
+}
+
+/** Anything that goes wrong after a successful submit has to carry the task id
+ * out with it. Without this, a 502 on a poll or a reset connection on the
+ * download threw a message that named neither the task nor the charge: the mix
+ * was paid for, was finished, was sitting in R2 -- and the caller's only handle
+ * to it had been dropped on the floor. Re-running was the only way forward, and
+ * it charged again.
+ *
+ * Expressed as a plain VideoKitError rather than a new exported error class:
+ * the recovery is the same in every case (re-poll the task id, which is in the
+ * message), a new class would have to be semver-locked into the public surface
+ * for no branching the caller can act on, and callers already catch
+ * VideoKitError. The one error passed through untouched is DuckingFailedError:
+ * there the SERVER's own processing failed, so there is no finished mix to
+ * re-fetch and the refund path applies instead -- re-polling would only return
+ * the same failure, and its `refunded` flag already reports the charge.
+ *
+ * The presigned output_url is deliberately never put in the message: it is a
+ * capability granting read access to the artifact, and errors get logged. The
+ * task id is the safe handle -- it yields a fresh URL on the next poll. */
+function rethrowWithTaskId(err: unknown, taskId: string): unknown {
+  if (err instanceof DuckingFailedError) return err;
+  const reason = err instanceof Error ? err.message : String(err);
+  return new VideoKitError(
+    `The ducking API ran, but the finished mix could not be collected: ${reason}. ${paidNote(taskId)}`,
+  );
+}
+
+/** Where to rescue the paid mix to, without ever clobbering a rescued mix from
+ * an EARLIER failed run. `<output>.ducked.wav` may already hold an
+ * irreplaceable, paid-for mix that this call did not write; overwriting it (or,
+ * as the old rescue did, deleting it) destroys audio the customer cannot get
+ * back without paying again. If the obvious name is taken, step aside to
+ * `<output>.ducked.1.wav`, `.2.wav`, ... so both survive. */
+async function freeRescuePath(output: string): Promise<string> {
+  const candidates = [`${output}.ducked.wav`];
+  for (let n = 1; n <= 50; n++) candidates.push(`${output}.ducked.${n}.wav`);
+  candidates.push(`${output}.ducked.${randomUUID()}.wav`);
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+    } catch {
+      return candidate; // does not exist: free to write
+    }
+  }
+  /* c8 ignore next */
+  return candidates[candidates.length - 1]!;
 }
 
 /** Copy `sourcePath` to `destPath` without ever leaving a truncated file at
@@ -253,39 +332,50 @@ async function placeAtomically(sourcePath: string, destPath: string): Promise<vo
  * placement step, so the rescue logic itself is never duplicated -- only
  * the human-readable `stage` description differs per call site.
  *
+ * The rescue goes through the SAME copy-to-sibling-temp-then-rename dance as
+ * placeAtomically, and onto a path nothing else occupies (freeRescuePath), for
+ * two reasons that both come down to never destroying a paid mix:
+ *
+ *  - a copyFile straight onto the rescue path opens it O_TRUNC, so a failure
+ *    partway through (ENOSPC -- likely the same thing that failed the mux)
+ *    leaves a truncated file exactly where the error tells the user to look;
+ *  - the cleanup after a failed rescue may only ever delete a file THIS call
+ *    created. The old code removed `<output>.ducked.wav` unconditionally, so a
+ *    rescue that failed at open (EACCES against a read-only rescued mix left by
+ *    an earlier run) still unlinked it -- unlink needs write permission on the
+ *    directory, not the file -- and an irreplaceable, already-paid-for mix from
+ *    the previous run was gone. Now only the temp file is ever removed.
+ *
  * The rescue copy can itself fail (most commonly for the same reason the
  * original operation failed, e.g. `output`'s directory doesn't exist). That
  * must not surface as a bare fs error that mentions neither the real
  * failure nor the fact that this call was already charged, so it's caught
- * and folded into the same informative `VideoKitError`. */
+ * and folded into the same informative `VideoKitError` -- which, since the
+ * mix could not be saved locally, points at the one handle that still works:
+ * re-polling the task id. */
 async function rescueAndThrow(
   stage: string,
   cause: unknown,
   duckedPath: string,
   output: string,
+  taskId: string,
 ): Promise<never> {
-  const recoveredPath = `${output}.ducked.wav`;
   const reason = cause instanceof Error ? cause.message : String(cause);
+  let recoveredPath = `${output}.ducked.wav`;
   let rescueNote: string;
   try {
-    await copyFile(duckedPath, recoveredPath);
+    recoveredPath = await freeRescuePath(output);
+    await placeAtomically(duckedPath, recoveredPath);
     rescueNote =
       `The ducked audio was saved to ${recoveredPath} so you can recover it locally ` +
       `(e.g. retry the mux, or move the file into place yourself) instead of calling ` +
-      `duckMusicUnderSpeech again, which would incur another charge.`;
+      `duckMusicUnderSpeech again, which would incur another charge. You have already ` +
+      `been charged for ducking task ${taskId}.`;
   } catch (rescueErr) {
-    // copyFile itself isn't atomic: a failure partway through (most likely
-    // ENOSPC -- also the likely cause of the original failure) would
-    // otherwise leave a truncated, or previously-good-now-clobbered, file at
-    // recoveredPath, exactly the kind of half-written "deliverable" this
-    // whole rescue exists to prevent. Remove it rather than leave the user
-    // trusting a corrupt recovery file.
-    await rm(recoveredPath, { force: true }).catch(() => {});
     const rescueReason = rescueErr instanceof Error ? rescueErr.message : String(rescueErr);
     rescueNote =
       `Attempting to also save the ducked audio to ${recoveredPath} ALSO failed ` +
-      `(${rescueReason}), so the mix could not be recovered locally -- calling ` +
-      `duckMusicUnderSpeech again will incur another charge.`;
+      `(${rescueReason}), so the mix could not be recovered locally. ${paidNote(taskId)}`;
   }
   throw new VideoKitError(
     `${stage} failed, after the ducking API had already run and been billed for this ` +

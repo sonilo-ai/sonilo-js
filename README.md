@@ -77,6 +77,27 @@ the video must have an audio track, and it must run no longer than **360
 seconds**. Either failure throws; the kit never quietly falls back to an
 un-ducked mix. Use `mixWithVideo` for silent or longer videos.
 
+### Nothing you have paid for is thrown away
+
+The API charges when the job is **submitted**, and the task then runs to
+completion server-side whatever happens to your process. So every failure after
+that point is handled so that the mix you have already paid for stays reachable.
+
+Transient failures are simply retried (with backoff): a 5xx while polling the
+task, a dropped connection, a 503 from the storage host while downloading the
+finished mix. One blip mid-poll no longer bins a paid job.
+
+If a failure after submit is *not* recoverable — the poll fails terminally, the
+download can't be completed, the wait times out, or you abort — the error names
+the **task id** and tells you that the charge has already been made and that the
+task is still finishing on the server. Poll `GET /v1/tasks/<task_id>` yourself
+(`client.request("/v1/tasks/<task_id>")`) until it reports `succeeded` and
+download the `output_url` it returns: that re-fetches the mix you paid for
+rather than submitting — and paying for — a second job. Calling
+`duckMusicUnderSpeech` again would charge you twice. (The presigned URL itself
+is deliberately kept out of error messages: it grants read access to your
+artifact, and errors end up in logs.)
+
 If a final, purely-local step — remuxing the ducked audio onto your picture,
 or placing the finished file at `output` — fails after the API call has
 already run (for example, `output`'s extension names a container that can't
@@ -86,12 +107,16 @@ up), the kit does not throw away the mix you already paid for. It saves the
 downloaded ducked audio to `<output>.ducked.wav` and throws an error naming
 that path, so you can fix the local problem (e.g. pick a working container,
 or a valid `output` path) and finish locally instead of calling
-`duckMusicUnderSpeech` again and being billed a second time. The file is
-also always placed at `output` atomically — a failure partway through never
-leaves a truncated file there. In the rare case where even that rescue save
-fails (e.g. `output`'s directory doesn't exist, so there's nowhere to save
-the rescue copy either), the error says so explicitly instead of surfacing a
-bare filesystem error.
+`duckMusicUnderSpeech` again and being billed a second time. If a rescued mix
+from an earlier run is already sitting at `<output>.ducked.wav`, it is left
+untouched and the new one is saved alongside it (`<output>.ducked.1.wav`) —
+a rescue never overwrites or deletes a paid-for mix it did not itself write.
+The file is also always placed at `output` atomically — a failure partway
+through never leaves a truncated file there. In the rare case where even that
+rescue save fails (e.g. `output`'s directory doesn't exist, so there's nowhere
+to save the rescue copy either), the error says so explicitly, names the task
+id, and points you at the re-poll above instead of surfacing a bare filesystem
+error.
 
 ## Errors
 
@@ -99,8 +124,14 @@ bare filesystem error.
 (ffmpeg/ffprobe missing — message includes install hints), `FfmpegError`
 (ffmpeg failed — carries `exitCode` and `stderrTail`), `DuckingFailedError` (the
 ducking API accepted the job but could not finish it — carries `code` and
-`refunded`, which reports whether the charge was reversed). Errors from the
-Sonilo API pass through as the `sonilo` package's typed errors.
+`refunded`). Errors from the Sonilo API pass through as the `sonilo` package's
+typed errors.
+
+`refunded` reports what the server said **at the moment the task was polled**,
+not a final verdict: the backend marks a task failed before it reverses the
+charge, and retries a reversal that fails. So `refunded: false` means the
+reversal had not landed yet, not that you were definitely billed — the message
+says as much.
 
 ## License
 

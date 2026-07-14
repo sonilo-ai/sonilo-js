@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -68,6 +68,44 @@ function stubClient(taskBody: Record<string, unknown> = {
   return { client, calls, uploadedVoice };
 }
 
+/** Like stubClient, but `onPoll` decides what each poll does -- throw the way a
+ * real SoniloClient does on a non-2xx, hand back a 5xx, or succeed. The submit
+ * always succeeds, so everything it drives happens AFTER the account is
+ * charged. */
+function pollingClient(onPoll: (attempt: number) => Promise<Response>) {
+  const calls: string[] = [];
+  let polls = 0;
+  const client: DuckingClient = {
+    async request(path) {
+      calls.push(path);
+      if (path === "/v1/audio-ducking") {
+        return new Response(JSON.stringify({ task_id: "t_1", status: "processing" }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      polls += 1;
+      return onPoll(polls);
+    },
+  };
+  return { client, calls };
+}
+
+function taskResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** The sonilo SDK's APIError shape: an Error carrying a numeric `status`. */
+function apiError(status: number): Error {
+  return Object.assign(new Error(`HTTP ${status}: request failed`), {
+    name: "APIError",
+    status,
+  });
+}
+
 /** Stub download: hands back the fixture wav, standing in for the R2 object. */
 function stubFetch(bytes: Uint8Array) {
   return (async () => new Response(bytes)) as unknown as typeof globalThis.fetch;
@@ -82,10 +120,22 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Every mkdtemp(tmpdir(), "sonilo-video-kit-duck-") entry currently in tmpdir(). */
-async function duckWorkDirs(): Promise<string[]> {
-  const entries = await readdir(tmpdir());
-  return entries.filter((e) => e.startsWith("sonilo-video-kit-duck-"));
+/** Every mkdtemp(tmpdir(), "sonilo-video-kit-duck-") entry currently in tmpdir().
+ *
+ * tmpdir() is SHARED: a concurrent run of this suite, or a crashed earlier one,
+ * leaves work dirs behind that have nothing to do with this test. Comparing the
+ * whole listing before/after therefore fails for reasons that aren't the code's
+ * fault, so callers below assert only on what THIS call added (see newWorkDirs). */
+async function duckWorkDirs(): Promise<Set<string>> {
+  const entries = await readdir(tmpdir()).catch(() => [] as string[]);
+  return new Set(entries.filter((e) => e.startsWith("sonilo-video-kit-duck-")));
+}
+
+/** Work dirs that appeared since `before` — the only thing a leak test can
+ * soundly attribute to the code under test. Strays left by other runs are
+ * present in both snapshots and so cancel out. */
+async function newWorkDirs(before: Set<string>): Promise<string[]> {
+  return [...(await duckWorkDirs())].filter((d) => !before.has(d));
 }
 
 describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", () => {
@@ -311,13 +361,18 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
   });
 
   it("validates its arguments", async () => {
-    const { client } = stubClient();
+    // Asserted on the MESSAGE, not on `toThrow(VideoKitError)`: FfmpegError,
+    // FfmpegNotFoundError and DuckingFailedError all extend VideoKitError, so
+    // the class assertion passed on literally any failure -- including the very
+    // failures these guards exist to prevent.
+    const { client, calls } = stubClient();
     await expect(
       duckMusicUnderSpeech({ video: "", audio: fx.musicMp3, output: "o.mp4", client }),
-    ).rejects.toThrow(VideoKitError);
+    ).rejects.toThrow(/video is required/);
     await expect(
       duckMusicUnderSpeech({ video: fx.videoWithAudio, audio: fx.musicMp3, output: "", client }),
-    ).rejects.toThrow(VideoKitError);
+    ).rejects.toThrow(/output is required/);
+    expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged
   });
 
   it("rejects when audio is missing", async () => {
@@ -364,7 +419,7 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
       pollIntervalMs: 1,
       fetch: stubFetch(ducked),
     });
-    expect(await duckWorkDirs()).toEqual(before);
+    expect(await newWorkDirs(before)).toEqual([]);
 
     const { client: failClient } = stubClient({
       status: "failed",
@@ -379,7 +434,7 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
       pollIntervalMs: 1,
       fetch: stubFetch(ducked),
     }).catch(() => {});
-    expect(await duckWorkDirs()).toEqual(before);
+    expect(await newWorkDirs(before)).toEqual([]);
   });
 
   it("preserves the paid-for ducked mix and leaves no file at output when the local mux fails", async () => {
@@ -488,6 +543,157 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect(await exists(output)).toBe(false);
     expect(await exists(recoveredPath)).toBe(false); // rescue genuinely failed -- nothing was written there
   });
+
+  it("names the task id and the charge when a poll fails terminally after submit", async () => {
+    // The submit SUCCEEDED, so calculate_and_charge has already run and the
+    // task is running server-side; it will finish and upload a mix the customer
+    // has paid for. Pre-fix, a terminal poll failure threw the raw
+    // "HTTP 404: request failed" -- naming neither the task nor the charge -- so
+    // the only handle to the paid artifact was dropped, and the only way
+    // forward was to call again and be charged twice.
+    const { client, calls } = pollingClient(async () => {
+      throw apiError(404);
+    });
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output: join(dir, "poll_died.mp4"),
+      client,
+      pollIntervalMs: 1,
+      fetch: stubFetch(ducked),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).toContain("t_1"); // the handle to the paid-for mix
+    expect(message).toMatch(/already been charged/i);
+    expect(message).toContain("/v1/tasks/t_1"); // and how to re-fetch it
+    expect(message).toContain("HTTP 404"); // the underlying cause survives
+    expect(calls).toEqual(["/v1/audio-ducking", "/v1/tasks/t_1"]); // 4xx: not retried
+  });
+
+  it("retries a transient poll failure and still delivers the mix", async () => {
+    const output = join(dir, "poll_retry.mp4");
+    const { client, calls } = pollingClient(async (attempt) => {
+      if (attempt === 1) throw apiError(502); // a load balancer, mid-deploy
+      if (attempt === 2) return new Response("upstream", { status: 503 });
+      return taskResponse({
+        status: "succeeded",
+        output_url: "https://r2.example/ducked.wav",
+        output_type: "audio",
+      });
+    });
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).resolves.toBe(output);
+
+    expect(calls.filter((c) => c.startsWith("/v1/tasks/"))).toHaveLength(3);
+    expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
+  });
+
+  it("retries a transient download failure and still delivers the mix", async () => {
+    const output = join(dir, "download_retry.mp4");
+    const { client } = stubClient();
+    let attempts = 0;
+    const flakyFetch = (async () => {
+      attempts += 1;
+      if (attempts === 1) return new Response("upstream", { status: 503 });
+      return new Response(ducked);
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: flakyFetch,
+      }),
+    ).resolves.toBe(output);
+
+    expect(attempts).toBe(2);
+    expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
+  });
+
+  it("names the task id, and never the presigned URL, when the download finally fails", async () => {
+    // The task reached `succeeded`, so it is charged and the mix is in R2. If
+    // the download can't be completed even after retries, the error must still
+    // hand back the one thing that recovers it -- the task id -- and must NOT
+    // leak the presigned output_url, which is a capability granting read access
+    // to the artifact and which ends up in logs.
+    const { client } = stubClient();
+    const deadFetch = (async () =>
+      new Response("upstream", { status: 502 })) as unknown as typeof globalThis.fetch;
+
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output: join(dir, "download_died.mp4"),
+      client,
+      pollIntervalMs: 1,
+      fetch: deadFetch,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).toContain("t_1");
+    expect(message).toMatch(/already been charged/i);
+    expect(message).toContain("/v1/tasks/t_1");
+    expect(message).toContain("HTTP 502");
+    expect(message).not.toContain("r2.example"); // the capability URL never leaks
+  }, 20_000); // the retries back off for real (0.5 s + 1 s + 2 s)
+
+  it.skipIf(process.getuid?.() === 0)(
+    "does not destroy a rescued mix from an earlier run that it did not create",
+    async () => {
+      // An earlier failed run already rescued its paid-for mix to
+      // `<output>.ducked.wav`, and the user made it read-only to protect it.
+      // This run fails at placement too, so it rescues as well -- and pre-fix,
+      // its rescue copyFile failed at OPEN with EACCES (having touched nothing),
+      // whereupon the catch block ran `rm(recoveredPath, { force: true })`,
+      // which succeeds regardless: unlink needs write permission on the
+      // DIRECTORY, not on the file. The earlier run's irreplaceable, already-paid
+      // mix was deleted by a rescue that never wrote a byte.
+      const output = join(dir, "prior_rescue.mp4");
+      await mkdir(output); // forces the placement step to fail (EISDIR on rename)
+      const priorPath = `${output}.ducked.wav`;
+      const priorBytes = new Uint8Array([1, 1, 2, 3, 5, 8]); // the earlier paid mix
+      await writeFile(priorPath, priorBytes);
+      await chmod(priorPath, 0o444);
+
+      const { client } = stubClient();
+      const err = await duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(VideoKitError);
+
+      // The load-bearing assertion: the earlier run's paid mix is untouched.
+      expect(await exists(priorPath)).toBe(true);
+      expect(new Uint8Array(await readFile(priorPath))).toEqual(priorBytes);
+
+      // ...and THIS run's mix was rescued too, next to it rather than over it.
+      const rescuedPath = `${output}.ducked.1.wav`;
+      expect(await exists(rescuedPath)).toBe(true);
+      expect(new Uint8Array(await readFile(rescuedPath))).toEqual(ducked);
+      expect((err as VideoKitError).message).toContain(rescuedPath);
+    },
+  );
 
   it("removes a partial recovery file left by a rescue copy that fails partway through", async () => {
     // Same shape as "already_a_directory" above -- output pre-exists as a
