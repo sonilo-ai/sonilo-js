@@ -54,10 +54,24 @@ export function runProcess(
 }
 
 export interface ProbeResult {
+  /** The CONTAINER duration (ffprobe's `format.duration`): the maximum over all
+   * streams, so for a video whose audio track outlives its picture this is the
+   * AUDIO's length, not the picture's. Correct as a target for a mix that may
+   * only pad the audio and must never truncate the picture (see mix.ts); wrong
+   * for anything metered on, or trimmed to, the picture (see
+   * `videoDurationSeconds`). */
   durationSeconds: number;
   hasAudio: boolean;
   audioCodec: string | null;
+  /** Codec of the genuine picture stream, or null when there isn't one —
+   * an audio-only file, or one whose only "video" stream is attached cover
+   * art. Null means `muxVideoWithAudio`'s `-map 0:V` would match nothing. */
   videoCodec: string | null;
+  /** Duration of the genuine picture stream, or null when there isn't one.
+   * This — not `durationSeconds` — is the length of picture the viewer
+   * actually receives, and the length the ducking API bills a video on
+   * (`min(audio, picture)`). */
+  videoDurationSeconds: number | null;
 }
 
 export async function probeVideo(video: string, ffprobePath: string): Promise<ProbeResult> {
@@ -70,7 +84,12 @@ export async function probeVideo(video: string, ffprobePath: string): Promise<Pr
   ]);
   interface FfprobeJson {
     format?: { duration?: string };
-    streams?: Array<{ codec_type?: string; codec_name?: string }>;
+    streams?: Array<{
+      codec_type?: string;
+      codec_name?: string;
+      duration?: string;
+      disposition?: { attached_pic?: number };
+    }>;
   }
   const parsed = JSON.parse(stdout) as FfprobeJson;
   const durationSeconds = Number(parsed.format?.duration);
@@ -80,12 +99,30 @@ export async function probeVideo(video: string, ffprobePath: string): Promise<Pr
     throw new VideoKitError(`Could not determine a valid duration for ${video}; refusing to render`);
   }
   const audioStream = parsed.streams?.find((s) => s.codec_type === "audio");
-  const videoStream = parsed.streams?.find((s) => s.codec_type === "video");
+  // A genuine picture, NOT embedded cover art (`disposition.attached_pic = 1`,
+  // the standard ID3/MP4 album-art tag on MP3/M4A/FLAC). An audio file with
+  // cover art reports a `codec_type=video` stream and would otherwise look
+  // like a video here — while `muxVideoWithAudio`'s `-map 0:V` (capital V)
+  // excludes exactly those streams and would then match nothing at all. This
+  // definition and that selector must agree.
+  const videoStream = parsed.streams?.find(
+    (s) => s.codec_type === "video" && s.disposition?.attached_pic !== 1,
+  );
+  // The picture's OWN duration. Some containers carry no per-stream duration
+  // (e.g. some MKV muxers omit it): fall back explicitly to the container
+  // duration, which is the best available estimate there.
+  let videoDurationSeconds: number | null = null;
+  if (videoStream !== undefined) {
+    const streamDuration = Number(videoStream.duration);
+    videoDurationSeconds =
+      Number.isFinite(streamDuration) && streamDuration > 0 ? streamDuration : durationSeconds;
+  }
   return {
     durationSeconds,
     hasAudio: audioStream !== undefined,
     audioCodec: audioStream?.codec_name ?? null,
     videoCodec: videoStream?.codec_name ?? null,
+    videoDurationSeconds,
   };
 }
 
@@ -114,15 +151,28 @@ export async function measureIntegratedLufs(
 
 /** Pre-extract the video's audio track to a standalone .m4a. The mix step must
  * never pull audio from the video input while also outputting its video —
- * ffmpeg's muxer can deadlock on large files (sonilo-web repro: 141 MB 4K). */
+ * ffmpeg's muxer can deadlock on large files (sonilo-web repro: 141 MB 4K).
+ *
+ * `trimToSeconds` (optional) caps the extraction at that many seconds, as an
+ * OUTPUT option (`-t` after the input), so no container — however long its
+ * audio stream claims to be — yields more audio than asked for. duckMusicUnderSpeech
+ * passes the PICTURE's duration: the extracted track is what gets uploaded to
+ * (and billed by) the ducking API, and billing for audio the viewer never
+ * receives is an overcharge. Omitted by callers that want the whole track
+ * (mix.ts, whose mix pads rather than truncates). */
 export async function extractAudio(
   video: string,
   outPath: string,
   audioCodec: string | null,
   ffmpegPath: string,
+  trimToSeconds?: number,
 ): Promise<void> {
   const codecArgs = audioCodec === "aac" ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "192k"];
-  await runProcess(ffmpegPath, ["-y", "-i", video, "-vn", ...codecArgs, outPath]);
+  const trimArgs =
+    trimToSeconds !== undefined && Number.isFinite(trimToSeconds) && trimToSeconds > 0
+      ? ["-t", trimToSeconds.toFixed(3)]
+      : [];
+  await runProcess(ffmpegPath, ["-y", "-i", video, "-vn", ...codecArgs, ...trimArgs, outPath]);
 }
 
 /** Replace a video's audio with `audioPath`, copying the picture untouched.

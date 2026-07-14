@@ -22,7 +22,11 @@ export async function makeFixtures(dir: string): Promise<{
   videoSilentTrack: string;
   videoLongSilent: string;
   videoTooLong: string;
+  videoAudioOutlivesPicture: string;
+  audioOnly: string;
+  audioWithCoverArt: string;
   musicMp3: string;
+  musicTooLong: string;
   duckedWav: string;
 }> {
   const videoWithAudio = join(dir, "with_audio.mp4");
@@ -65,13 +69,59 @@ export async function makeFixtures(dir: string): Promise<{
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
     videoTooLong,
   ]);
+  // A video whose AUDIO TRACK OUTLIVES ITS PICTURE: 1 s of picture, 3 s of
+  // audio (no -shortest). Routine in the wild — encoder padding produces it —
+  // and the shape the ducking API's own comments cite (4 s picture / 10 s
+  // audio) as an accepted input. ffprobe reports format.duration = 3.0 (the
+  // max over all streams) but the video stream's own duration = 1.0, so any
+  // code that bills, trims, or muxes on format.duration is working with the
+  // wrong number.
+  const videoAudioOutlivesPicture = join(dir, "audio_outlives_picture.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    videoAudioOutlivesPicture,
+  ]);
+  // Audio-only, no video stream at all: a voiceover .m4a. The ducking API
+  // accepts this as a voice input, so callers naturally hand it to us — but
+  // there is no picture to mux back onto.
+  const audioOnly = join(dir, "voice_only.m4a");
+  run(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac", audioOnly]);
+  // Audio whose ONLY "video" stream is attached cover art (ffprobe:
+  // codec_type=video, disposition.attached_pic=1) — an ordinary music/podcast
+  // file with album art. It has a `videoCodec`, so a naive has-a-picture check
+  // passes it, yet `-map 0:V` (capital V) excludes attached pictures and would
+  // match no stream at all.
+  const coverPng = join(dir, "cover.png");
+  run(["-f", "lavfi", "-i", "color=c=red:s=64x64:d=1", "-frames:v", "1", coverPng]);
+  const audioWithCoverArt = join(dir, "cover_art.m4a");
+  run([
+    "-i", audioOnly, "-i", coverPng,
+    "-map", "0:a", "-map", "1:v",
+    "-c:a", "copy", "-c:v", "mjpeg",
+    "-disposition:v:0", "attached_pic",
+    audioWithCoverArt,
+  ]);
+  // 361 s of music — one second past the cap the API applies to the MUSIC
+  // track too. Cheap: a low-sample-rate mono sine.
+  const musicTooLong = join(dir, "music_too_long.mp3");
+  run([
+    "-f", "lavfi", "-i", "sine=frequency=220:duration=361:sample_rate=8000",
+    "-ac", "1", "-c:a", "libmp3lame", "-b:a", "32k",
+    musicTooLong,
+  ]);
   return {
     videoWithAudio,
     videoSilent,
     videoSilentTrack,
     videoLongSilent,
     videoTooLong,
+    videoAudioOutlivesPicture,
+    audioOnly,
+    audioWithCoverArt,
     musicMp3,
+    musicTooLong,
     duckedWav,
   };
 }

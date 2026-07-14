@@ -28,6 +28,35 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     expect(silent.audioCodec).toBeNull();
   });
 
+  it("probeVideo reports the PICTURE's duration separately from the container's", async () => {
+    // 1 s of picture, 3 s of audio. format.duration is ffprobe's max over all
+    // streams, so it reads 3.0 -- the audio's length. Anything metered on or
+    // trimmed to the picture (billing, the mux target) needs the 1.0.
+    const skewed = await probeVideo(fx.videoAudioOutlivesPicture, "ffprobe");
+    expect(skewed.durationSeconds).toBeGreaterThan(2.5); // the container: the audio's length
+    expect(skewed.videoDurationSeconds!).toBeLessThan(1.5); // the picture's own length
+    expect(skewed.videoDurationSeconds!).toBeGreaterThan(0.5);
+
+    // Where the two agree, they agree.
+    const normal = await probeVideo(fx.videoWithAudio, "ffprobe");
+    expect(normal.videoDurationSeconds!).toBeCloseTo(normal.durationSeconds, 0);
+  });
+
+  it("probeVideo reports no picture for audio-only files, including one with cover art", async () => {
+    const audioOnly = await probeVideo(fx.audioOnly, "ffprobe");
+    expect(audioOnly.videoCodec).toBeNull();
+    expect(audioOnly.videoDurationSeconds).toBeNull();
+
+    // Cover art IS a codec_type=video stream (mjpeg), but it is
+    // disposition.attached_pic=1 and `-map 0:V` excludes it -- so it must not
+    // be reported as a picture, or a caller checking `videoCodec !== null`
+    // would mux against a stream ffmpeg refuses to map.
+    const coverArt = await probeVideo(fx.audioWithCoverArt, "ffprobe");
+    expect(coverArt.hasAudio).toBe(true);
+    expect(coverArt.videoCodec).toBeNull();
+    expect(coverArt.videoDurationSeconds).toBeNull();
+  });
+
   it("probeVideo rejects garbage input with FfmpegError", async () => {
     const garbage = join(dir, "garbage.mp4");
     await writeFile(garbage, "this is not a video");
@@ -50,6 +79,21 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     await extractAudio(fx.videoWithAudio, out, "aac", "ffmpeg");
     const lufs = await measureIntegratedLufs(out, "ffmpeg");
     expect(lufs).not.toBeNull();
+  });
+
+  it("extractAudio trims to trimToSeconds, and extracts the whole track without it", async () => {
+    // Without a trim, the 3 s audio track of a 1 s-picture video is extracted
+    // in full -- which is what mix.ts wants (it pads/trims in its own filter)
+    // and what duck.ts must NOT upload, since the API bills what it is given.
+    const untrimmed = join(dir, "extracted_untrimmed.m4a");
+    await extractAudio(fx.videoAudioOutlivesPicture, untrimmed, "aac", "ffmpeg");
+    expect((await probeVideo(untrimmed, "ffprobe")).durationSeconds).toBeGreaterThan(2.5);
+
+    const trimmed = join(dir, "extracted_trimmed.m4a");
+    await extractAudio(fx.videoAudioOutlivesPicture, trimmed, "aac", "ffmpeg", 1);
+    const probe = await probeVideo(trimmed, "ffprobe");
+    expect(probe.durationSeconds).toBeLessThan(1.5);
+    expect(probe.durationSeconds).toBeGreaterThan(0.5);
   });
 });
 
