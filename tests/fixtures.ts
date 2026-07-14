@@ -22,6 +22,7 @@ export async function makeFixtures(dir: string): Promise<{
   videoSilentTrack: string;
   videoLongSilent: string;
   musicMp3: string;
+  duckedWav: string;
 }> {
   const videoWithAudio = join(dir, "with_audio.mp4");
   const videoSilent = join(dir, "silent.mp4");
@@ -51,5 +52,7 @@ export async function makeFixtures(dir: string): Promise<{
     videoLongSilent,
   ]);
   run(["-f", "lavfi", "-i", "sine=frequency=220:duration=2", "-c:a", "libmp3lame", musicMp3]);
-  return { videoWithAudio, videoSilent, videoSilentTrack, videoLongSilent, musicMp3 };
+  const duckedWav = join(dir, "ducked.wav");
+  run(["-f", "lavfi", "-i", "sine=frequency=330:duration=1", duckedWav]);
+  return { videoWithAudio, videoSilent, videoSilentTrack, videoLongSilent, musicMp3, duckedWav };
 }

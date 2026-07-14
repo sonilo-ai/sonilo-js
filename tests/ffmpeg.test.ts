@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FfmpegError, FfmpegNotFoundError, VideoKitError } from "../src/errors.js";
-import { extractAudio, measureIntegratedLufs, probeVideo, runProcess } from "../src/ffmpeg.js";
+import { extractAudio, measureIntegratedLufs, muxVideoWithAudio, probeVideo, runProcess } from "../src/ffmpeg.js";
 import { hasFfmpeg, makeFixtures } from "./fixtures.js";
 
 describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
@@ -50,6 +50,42 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     await extractAudio(fx.videoWithAudio, out, "aac", "ffmpeg");
     const lufs = await measureIntegratedLufs(out, "ffmpeg");
     expect(lufs).not.toBeNull();
+  });
+});
+
+describe.skipIf(!hasFfmpeg)("muxVideoWithAudio (requires ffmpeg on PATH)", () => {
+  let dir: string;
+  let fx: Awaited<ReturnType<typeof makeFixtures>>;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "svk-mux-"));
+    fx = await makeFixtures(dir);
+  });
+
+  it("replaces the audio while copying the picture untouched", async () => {
+    const output = join(dir, "muxed.mp4");
+    const source = await probeVideo(fx.videoWithAudio, "ffprobe");
+
+    await muxVideoWithAudio(fx.videoWithAudio, fx.duckedWav, output, source.durationSeconds, "ffmpeg");
+
+    const probe = await probeVideo(output, "ffprobe");
+    expect(probe.videoCodec).toBe("h264"); // -c:v copy preserved the original stream
+    expect(probe.hasAudio).toBe(true);
+    expect(probe.audioCodec).toBe("aac");
+    expect(probe.durationSeconds).toBeGreaterThan(0.5);
+    expect(probe.durationSeconds).toBeLessThan(2);
+  });
+
+  it("pads audio shorter than the picture instead of truncating the picture", async () => {
+    const output = join(dir, "muxed_padded.mp4");
+    const source = await probeVideo(fx.videoLongSilent, "ffprobe"); // 4 s, no audio track
+
+    // A 1 s replacement track on a 4 s picture: the picture must survive in full.
+    await muxVideoWithAudio(fx.videoLongSilent, fx.duckedWav, output, source.durationSeconds, "ffmpeg");
+
+    const probe = await probeVideo(output, "ffprobe");
+    expect(probe.videoCodec).toBe("h264");
+    expect(probe.durationSeconds).toBeGreaterThan(3.5);
   });
 });
 

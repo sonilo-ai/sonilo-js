@@ -124,3 +124,35 @@ export async function extractAudio(
   const codecArgs = audioCodec === "aac" ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "192k"];
   await runProcess(ffmpegPath, ["-y", "-i", video, "-vn", ...codecArgs, outPath]);
 }
+
+/** Replace a video's audio with `audioPath`, copying the picture untouched.
+ *
+ * `-map 0:V` (capital V) selects video streams EXCLUDING attached pictures.
+ * Lowercase `0:v` also maps embedded cover art (common in MKV/M4V/iTunes
+ * exports); that stream is one packet long, so a length-limited mux stops
+ * before any real video or audio packet is written — and ffmpeg still exits 0,
+ * yielding a "successful" file of a few hundred bytes with no audio at all.
+ *
+ * The audio is trimmed and silence-padded to `durationSeconds` rather than
+ * using `-shortest`, so a mix that runs short can never truncate the picture. */
+export async function muxVideoWithAudio(
+  video: string,
+  audioPath: string,
+  outPath: string,
+  durationSeconds: number,
+  ffmpegPath: string,
+): Promise<void> {
+  const dur = durationSeconds.toFixed(3);
+  await runProcess(ffmpegPath, [
+    "-y",
+    "-i", video,
+    "-i", audioPath,
+    "-filter_complex",
+    `[1:a]atrim=end=${dur},asetpts=N/SR/TB,apad=whole_dur=${dur}[aout]`,
+    "-map", "0:V",
+    "-map", "[aout]",
+    "-c:v", "copy",
+    "-c:a", "aac",
+    outPath,
+  ]);
+}
