@@ -31,6 +31,12 @@ export async function makeFixtures(dir: string): Promise<{
   videoFragmentedEmptyMoov: string;
   videoFragmentedKeyframe: string;
   videoEditList: string;
+  videoClockOffsetMkv: string;
+  videoClockOffsetWebm: string;
+  videoCopytsMkv: string;
+  videoPcrOffsetTs: string;
+  videoFlv: string;
+  videoOffsetEditList: string;
   audioOnly: string;
   audioWithCoverArt: string;
   videoWithCoverArt: string;
@@ -254,6 +260,149 @@ export async function makeFixtures(dir: string): Promise<{
   ]);
   const videoEditList = join(dir, "edit_list.mp4");
   run(["-ss", "2", "-i", videoEditListSource, "-c", "copy", videoEditList]);
+  // THE MATROSKA CLOCK-OFFSET OVERBILL. 1 s of picture under a 3 s audio track,
+  // written with the container's clock starting at 2 s (`-output_ts_offset 2`).
+  //
+  // Matroska's per-track `DURATION` tag is an END TIMESTAMP MEASURED FROM ZERO --
+  // a POSITION, not a LENGTH. The per-stream `duration` FIELD is a length. They
+  // need OPPOSITE corrections, and a cascade that trusts the tag unconditionally
+  // gives it none. So the moment the container carries a clock offset, the tag
+  // overstates the picture BY EXACTLY THAT OFFSET, without bound:
+  //
+  //   format.start_time='2.000000'  tags.DURATION='00:00:03.000000000'
+  //                ^^^ the clock offset          ^^^ an END position: 2 + 1
+  //
+  // 3.0 s of voice is uploaded under a 1.0 s picture: BILLED 3.00x, and the
+  // deliverable's picture freezes two thirds of the way through. The overbill
+  // scales with the offset (measured: 1.05x at 0.5 s, 2.00x at 10 s, 4.00x at
+  // 30 s), so it is unbounded. The correction is `tag - format.start_time`; the
+  // file is MEASURED rather than corrected, so no muxer's convention is trusted.
+  //
+  // Only Matroska/WebM are exposed, because only they carry the tag: the
+  // IDENTICAL MP4 at the identical offset has no tag, falls through, and is
+  // already measured correctly.
+  //
+  // Reachable from `-output_ts_offset`, from `-copyts` (below), and from any
+  // Matroska muxer that starts its tracks at a nonzero timecode -- segmented and
+  // live pipelines, hardware recorders. An everyday `ffmpeg -c copy` remux
+  // normalizes start_time to 0, which is why the ordinary MKV is safe.
+  const videoClockOffsetMkv = join(dir, "clock_offset.mkv");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    "-output_ts_offset", "2",
+    videoClockOffsetMkv,
+  ]);
+  const videoClockOffsetWebm = join(dir, "clock_offset.webm");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-deadline", "realtime", "-cpu-used", "8",
+    "-c:a", "libopus",
+    "-output_ts_offset", "2",
+    videoClockOffsetWebm,
+  ]);
+  // The SAME overbill, reached the way a real archive reaches it: `-copyts`, the
+  // standard TS -> MKV timestamp-PRESERVING remux. The source TS's PCR starts at
+  // ~1.47 s (a REAL broadcast clock offset, not a synthetic one), `-copyts` keeps
+  // it, and Matroska writes the tag as the resulting END position:
+  //
+  //   format.start_time='1.472000'  tags.DURATION='00:00:02.600000000'
+  //
+  // for a picture that runs 1.128 s. Billed 2.31x. This is the recipe an ordinary
+  // user actually types, which is what makes the tag's missing correction a live
+  // bug rather than a curiosity.
+  const videoCopytsSourceTs = join(dir, "copyts_source.ts");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    videoCopytsSourceTs,
+  ]);
+  const videoCopytsMkv = join(dir, "copyts.mkv");
+  run(["-copyts", "-i", videoCopytsSourceTs, "-c", "copy", videoCopytsMkv]);
+  // MPEG-TS WITH A REAL PCR OFFSET -- the fixture that pins the one genuinely
+  // CONTAINER-DEPENDENT quantity in the time model.
+  //
+  // ffmpeg rebases its output by the CONTAINER's `start_time` for every
+  // file-based container, but MPEG-TS is flagged AVFMT_TS_DISCONT (a broadcast
+  // clock, free to jump and wrap, with no meaningful file-relative zero): there
+  // ffmpeg discards the clock and zeroes the stream on ITS OWN first timestamp.
+  // So the origin is the PICTURE's start_time, not the container's, and this file
+  // is where the two visibly disagree:
+  //
+  //   format.start_time='4.272000'  (the PCR, which the AUDIO reaches first)
+  //   video start_time ='4.400000'  (the picture, 0.128 s = 3.2 frames later)
+  //
+  // Rebasing on the container's 4.272 bills 1.128 s for a picture that ffmpeg
+  // delivers as 1.000 s: a 12.8% overbill, and a deliverable whose picture
+  // freezes while the audio runs on.
+  //
+  // This distinction is IRREDUCIBLE, and that is not a matter of taste. An
+  // MPEG-TS and the `-copyts` MP4/MKV remux of it are IDENTICAL on every timing
+  // field ffprobe reports -- same format.start_time, same stream start_time, same
+  // duration field, same packet span -- and their delivered pictures differ by
+  // that same 0.128 s. No function of the metadata can tell them apart; only the
+  // demuxer's identity can. 25 fps deliberately: the 0.128 s skew has to exceed
+  // one frame's display time (0.040 s) to be a bug rather than a rounding artifact.
+  const videoPcrOffsetTs = join(dir, "pcr_offset.ts");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=25",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=8000",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k",
+    "-output_ts_offset", "3",
+    videoPcrOffsetTs,
+  ]);
+  // FLV: the container whose REBASE ORIGIN is neither zero nor the picture's own
+  // first packet. It reports
+  //
+  //   format.start_time='0.177000'   video stream start_time='0.200000'
+  //
+  // and ffmpeg rebases its output by the CONTAINER's 0.177, not the picture's
+  // 0.200 -- so the picture lands at [0.023, 1.023] in the deliverable and the
+  // deliverable runs 1.023 s. Billing on the picture's own first packet instead
+  // bills 1.000 and lands 0.023 s SHORT: the picture outlives the audio, leaving
+  // a one-frame silent tail, and the customer's last 23 ms of speech is never
+  // uploaded. The skew is constant, and it is the same class of bug as all the
+  // others -- an assumed convention. (MP4 and TS rebase to 0.000 and are
+  // unaffected, which is why only FLV shows it.)
+  //
+  // 10 fps: the FLV muxer rejects 1-3 fps outright ("Error submitting a packet").
+  const videoFlv = join(dir, "flv.flv");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=44100",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    videoFlv,
+  ]);
+  // AN EDIT LIST WHOSE SOURCE CARRIED A CLOCK OFFSET -- the file the old
+  // zero-clamp in the measurement claimed to defend against, built for real.
+  //
+  // `-ss 2 -c copy` of a clock-offset MP4. The result keeps the edit list (its
+  // packets really do run from pts -1.900) and, like EVERY edit-list file,
+  // reports `format.start_time=0.000000`: ffmpeg consumes the offset when it
+  // rebases, so a container clock offset and surviving negative pts DO NOT
+  // CO-OCCUR (verified across five constructions: `-ss -c copy`, `-copyts -ss`,
+  // `-muxdelay 0`, and re-offsetting an edit-list file each yield one or the
+  // other, never both).
+  //
+  // The clamp is gone regardless, because the rebase origin is now taken only
+  // from DECLARED starts (the container's, or for MPEG-TS the stream's) and never
+  // from a packet timestamp -- so a negative pts has no path to it. What is left
+  // to pin is that the MEASUREMENT still bills the PRESENTED picture (2.100 s)
+  // and not the CODED span (pts -1.900 .. 2.100 = 4.000 s, a 1.90x overbill),
+  // which it does by taking the packets' END and never their minimum.
+  const videoOffsetEditListSource = join(dir, "offset_edit_list_source.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=4:size=128x72:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    "-output_ts_offset", "2",
+    videoOffsetEditListSource,
+  ]);
+  const videoOffsetEditList = join(dir, "offset_edit_list.mp4");
+  run(["-ss", "2", "-i", videoOffsetEditListSource, "-c", "copy", videoOffsetEditList]);
   // Audio-only, no video stream at all: a voiceover .m4a. The ducking API
   // accepts this as a voice input, so callers naturally hand it to us — but
   // there is no picture to mux back onto.
@@ -311,6 +460,12 @@ export async function makeFixtures(dir: string): Promise<{
     videoFragmentedEmptyMoov,
     videoFragmentedKeyframe,
     videoEditList,
+    videoClockOffsetMkv,
+    videoClockOffsetWebm,
+    videoCopytsMkv,
+    videoPcrOffsetTs,
+    videoFlv,
+    videoOffsetEditList,
     audioOnly,
     audioWithCoverArt,
     videoWithCoverArt,

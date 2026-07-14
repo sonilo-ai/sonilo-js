@@ -16,14 +16,31 @@ import { hasFfmpeg, makeFixtures } from "./fixtures.js";
  * so probeVideo rejects it earlier -- so the missing pieces are removed from a
  * real probe instead.
  *
+ * `keepDurationField` strips ONLY the tags and LEAVES the `duration` field, which
+ * is the shape of a Matroska written by a muxer that does not author DURATION
+ * tags. The field it leaves behind on a sparse picture is a CONTAINER BACKFILL
+ * (the audio's length), so this is the one shape in which the backfill guard is
+ * the only thing standing between the customer and a 3x bill -- see the test that
+ * uses it. Without it the guard is unreachable: every real file that carries a
+ * backfilled field either carries a DURATION tag too (Matroska, answered by tier
+ * 1) or a clock offset (MPEG-TS, measured anyway).
+ *
  * `unmeasurable` additionally blanks the PACKET query, which is the last resort
  * probeVideo falls through to: with no timestamped packets either, the picture's
  * length cannot be established by any means at all, and the only safe answer is
  * to refuse. (It used to suffice to delete `avg_frame_rate`, because the
  * measurement was packets/frame-rate; the measurement now reads packet
  * timestamps, which no frame rate can break.) */
-async function fakeFfprobe(dir: string, opts: { unmeasurable?: boolean }): Promise<string> {
-  const path = join(dir, `fake_ffprobe_${opts.unmeasurable ? "unmeasurable" : "measurable"}.mjs`);
+async function fakeFfprobe(
+  dir: string,
+  opts: { unmeasurable?: boolean; keepDurationField?: boolean },
+): Promise<string> {
+  const name = opts.unmeasurable
+    ? "unmeasurable"
+    : opts.keepDurationField
+      ? "tagless"
+      : "measurable";
+  const path = join(dir, `fake_ffprobe_${name}.mjs`);
   await writeFile(
     path,
     `#!/usr/bin/env node
@@ -46,7 +63,7 @@ let out = res.stdout;
 try {
   const parsed = JSON.parse(out);
   for (const s of parsed.streams ?? []) {
-    delete s.duration;
+    ${opts.keepDurationField ? "" : "delete s.duration;"}
     for (const key of Object.keys(s.tags ?? {})) {
       if (key.toUpperCase().startsWith("DURATION")) delete s.tags[key];
     }
@@ -234,8 +251,185 @@ describe.skipIf(!hasFfmpeg)("ffmpeg layer (requires ffmpeg on PATH)", () => {
     }
   });
 
+  it("BILLS THE PICTURE for a Matroska/WebM carrying a CONTAINER CLOCK OFFSET (the DURATION tag is an END POSITION, not a length)", async () => {
+    // THE BUG. Matroska's `DURATION` tag is an END TIMESTAMP MEASURED FROM ZERO --
+    // a POSITION. The per-stream `duration` FIELD is a LENGTH. They need OPPOSITE
+    // corrections, and the tag was given none: it was tier 1, checked first, and
+    // it returned before any origin guard was consulted. So the instant a
+    // container carries a clock offset, the tag overstates the picture BY EXACTLY
+    // THAT OFFSET -- and nothing bounds the offset.
+    //
+    // 1 s of picture, container clock starting at 2 s: the tag says 00:00:03.
+    // Billed 3.00x, and the deliverable's picture freezes two thirds of the way
+    // through. Only Matroska/WebM are exposed, because only they carry the tag --
+    // the identical MP4 has none, falls through, and is measured correctly.
+    for (const [name, video, picture] of [
+      ["mkv", fx.videoClockOffsetMkv, 1.0],
+      ["webm", fx.videoClockOffsetWebm, 1.0],
+      // The same thing via `-copyts`, the standard TS -> MKV timestamp-preserving
+      // archive remux: a REAL PCR offset (~1.58 s) carried into Matroska, where
+      // the tag becomes 00:00:02.600 for a 1.023 s picture. Billed 2.54x.
+      ["copyts mkv", fx.videoCopytsMkv, 1.023],
+    ] as const) {
+      const probe = await probeVideo(video, "ffprobe");
+      // The picture, as ffmpeg will actually output it. NEVER the tag.
+      expect(probe.videoDurationSeconds!, name).toBeCloseTo(picture, 1);
+
+      // The teeth: the tag really is the inflated END position, and it really is
+      // the number the old cascade returned -- so this fixture still catches a
+      // regression to trusting it.
+      const raw = (await runProcess("ffprobe", [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream_tags=DURATION", "-of", "default=nw=1:nk=1", video,
+      ])).stdout.trim();
+      const tagSeconds = raw.split(":").reduce((acc, part) => acc * 60 + Number(part), 0);
+      const containerStart = Number((await runProcess("ffprobe", [
+        "-v", "error", "-show_entries", "format=start_time", "-of", "default=nw=1:nk=1", video,
+      ])).stdout.trim());
+      expect(containerStart, name).toBeGreaterThan(1); // a real clock offset...
+      // ...and the tag is the picture's end measured from zero, i.e. inflated by
+      // it. This is the figure that was billed, and it is nowhere near the truth.
+      expect(tagSeconds, name).toBeCloseTo(picture + containerStart, 1);
+      expect(tagSeconds - probe.videoDurationSeconds!, name).toBeGreaterThan(1);
+    }
+  });
+
+  it("rebases an MPEG-TS on the PICTURE's start, not the container's PCR (the origin is container-dependent)", async () => {
+    // The one genuinely CONTAINER-DEPENDENT quantity in the model, pinned.
+    //
+    // ffmpeg rebases output by the CONTAINER's start_time for every file-based
+    // container. MPEG-TS is flagged AVFMT_TS_DISCONT -- a broadcast clock with no
+    // meaningful file-relative zero -- so ffmpeg discards it and zeroes the stream
+    // on ITS OWN first timestamp instead. This file is where the two disagree:
+    // format.start_time=4.272 (the PCR, which the AUDIO reaches first) against a
+    // picture starting at 4.400, a 0.128 s gap = 3.2 frames at 25 fps.
+    //
+    // Rebasing on the container's figure bills 1.128 s for a picture ffmpeg
+    // delivers as 1.000 s -- a 12.8% overbill, well past the one-frame budget.
+    //
+    // And the distinction cannot be derived away: an MPEG-TS and the `-copyts`
+    // MP4 remux of it are IDENTICAL on every timing field ffprobe reports, and
+    // their delivered pictures differ by exactly this 0.128 s. Only the demuxer's
+    // identity separates them.
+    const probe = await probeVideo(fx.videoPcrOffsetTs, "ffprobe");
+    expect(probe.videoDurationSeconds!).toBeCloseTo(1.0, 1);
+    expect(probe.videoDurationSeconds!).toBeLessThan(1.05); // NOT the container-rebased 1.128
+
+    // The teeth: the two origin candidates really do differ by more than a frame,
+    // so a regression to the container's would genuinely overbill this file.
+    const containerStart = Number((await runProcess("ffprobe", [
+      "-v", "error", "-show_entries", "format=start_time", "-of", "default=nw=1:nk=1",
+      fx.videoPcrOffsetTs,
+    ])).stdout.trim());
+    // First line only: MPEG-TS carries a `programs` section, so ffprobe prints the
+    // stream's start_time once per program AND once for the stream itself.
+    const pictureStart = Number((await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=start_time", "-of", "default=nw=1:nk=1", fx.videoPcrOffsetTs,
+    ])).stdout.trim().split("\n")[0]);
+    expect(pictureStart - containerStart).toBeGreaterThan(0.1); // > 1/25 s
+  });
+
+  it("REJECTS a BACKFILLED duration field even when no DURATION tag is there to rescue it", async () => {
+    // The backfill guard, exercised in the ONE shape where it is the only thing
+    // standing between the customer and a 3x bill: a sparse Matroska whose muxer
+    // wrote no DURATION tags.
+    //
+    // When libavformat cannot time a track from its packets (a sparse picture: 10 s
+    // at 1 fps) it BACKFILLS `st->duration` from the CONTAINER's Duration -- the
+    // max over all streams, i.e. the 30 s AUDIO's length. Every real file that
+    // carries such a field also carries something that rescues it (Matroska's
+    // DURATION tag, answered by tier 1; MPEG-TS's clock offset, which forces a
+    // measurement), which is exactly why this needs the tag-stripped ffprobe to
+    // reach: without it the guard would be untested defensive code on a money path,
+    // and this file would be billed 30 s for a 10 s picture.
+    const probe = await probeVideo(
+      fx.videoSparsePictureMkv,
+      await fakeFfprobe(dir, { keepDurationField: true }),
+    );
+    expect(probe.durationSeconds).toBeGreaterThan(29); // the container: the audio's 30 s
+    expect(probe.videoDurationSeconds!).toBeCloseTo(10, 0); // the picture, MEASURED
+    expect(probe.videoDurationSeconds!).toBeLessThan(11.5); // NOT the backfilled 30 s
+
+    // The teeth: the field really is the container's, so trusting it really would
+    // bill 3x -- this fixture still catches a regression to it.
+    const field = Number((await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", fx.videoSparsePictureMkv,
+    ])).stdout.trim());
+    expect(field).toBeGreaterThan(29);
+    expect(Math.abs(field - probe.durationSeconds)).toBeLessThan(0.5); // it IS the container's
+  });
+
+  it("rebases an FLV on the CONTAINER's start_time, not the picture's own first packet", async () => {
+    // BUG 2, and the same class as every other: an ASSUMED convention. FLV reports
+    // format.start_time=0.177 while its picture's first packet sits at 0.200, and
+    // ffmpeg rebases its output by the CONTAINER's figure -- so the picture lands
+    // at [0.023, 1.023] in the deliverable, which therefore runs 1.023 s.
+    //
+    // Measuring from the picture's own first packet instead bills 1.000 and lands
+    // 0.023 s SHORT: the picture outlives the audio (a one-frame silent tail) and
+    // the customer's last 23 ms of speech is never uploaded. UNDERbilling is the
+    // dangerous direction -- they paid for a truncated file.
+    const probe = await probeVideo(fx.videoFlv, "ffprobe");
+    expect(probe.videoDurationSeconds!).toBeCloseTo(1.023, 2);
+    // The teeth, stated as the bug: the answer must NOT be the picture's own span
+    // (1.000), which is what subtracting its first packet yields.
+    expect(probe.videoDurationSeconds!).toBeGreaterThan(1.01);
+
+    // ...and the fixture really does have a container start that differs from the
+    // picture's, which is the only reason the two readings diverge at all.
+    const containerStart = Number((await runProcess("ffprobe", [
+      "-v", "error", "-show_entries", "format=start_time", "-of", "default=nw=1:nk=1", fx.videoFlv,
+    ])).stdout.trim());
+    const pictureStart = Number((await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "stream=start_time", "-of", "default=nw=1:nk=1", fx.videoFlv,
+    ])).stdout.trim());
+    expect(pictureStart).toBeGreaterThan(containerStart); // 0.200 vs 0.177
+  });
+
+  it("needs no zero-clamp: an edit list's negative pts cannot reach the rebase origin", async () => {
+    // BUG 3. The measurement used to clamp its origin at zero, to stop an edit
+    // list's negative pts from dragging it below zero on a file that ALSO carried
+    // a container clock offset. That file could never be built: an edit list is
+    // ffmpeg CONSUMING an offset, so every edit-list file reports
+    // format.start_time=0.000000 (verified across five constructions), and the
+    // clamp was unreachable, untested defensive code on a money path.
+    //
+    // It is now gone by CONSTRUCTION rather than by proof-of-unreachability: the
+    // rebase origin is taken only from DECLARED starts, never from a packet
+    // timestamp, so no pts -- negative or otherwise -- has a path to it. What
+    // still has to hold is that the measurement bills the PRESENTED picture and
+    // not the CODED span, which it does by taking the packets' END and never
+    // their minimum.
+    //
+    // This fixture is `-ss 2 -c copy` of a CLOCK-OFFSET mp4: its packets really do
+    // run from pts -1.900 to 2.000, so the coded span is 3.900 s for a picture
+    // that presents 2.000 s -- the 1.95x overbill is genuinely on the table.
+    // Forced through the measurement with the stripped ffprobe (no duration field,
+    // no DURATION tag), which is the one shape that reaches it unconditionally.
+    const probe = await probeVideo(fx.videoOffsetEditList, await fakeFfprobe(dir, {}));
+    expect(probe.videoDurationSeconds!).toBeCloseTo(2.0, 1); // the PRESENTED picture
+    expect(probe.videoDurationSeconds!).toBeLessThan(3); // NOT the 3.9 s coded span
+
+    // The teeth: the negative pts are really there, and the container really does
+    // report start_time=0 despite having been built from an offset source -- which
+    // is exactly why the clamp could never fire.
+    const pts = (await runProcess("ffprobe", [
+      "-v", "error", "-select_streams", "v:0",
+      "-show_entries", "packet=pts_time", "-of", "csv=p=0", fx.videoOffsetEditList,
+    ])).stdout.split("\n").filter((l) => l.length > 0).map(Number).filter(Number.isFinite);
+    expect(Math.min(...pts)).toBeLessThan(-1); // frames the edit list DISCARDS
+    const containerStart = Number((await runProcess("ffprobe", [
+      "-v", "error", "-show_entries", "format=start_time", "-of", "default=nw=1:nk=1",
+      fx.videoOffsetEditList,
+    ])).stdout.trim());
+    expect(containerStart).toBe(0); // the clamp's other precondition, never met
+  });
+
   it("tier 3 MEASURES an edit-list mp4 correctly rather than relying on never being reached by one", async () => {
-    // BUG 2, latent but one check away from live. `measurePictureSpan` reads RAW
+    // Latent, but one check away from live. The measurement reads RAW
     // packet timestamps, and those do NOT have the edit list applied: this file's
     // pts run -2.000 .. 8.000, a span of 10.000, for a picture that presents 8.000.
     // A `max - min` measurement bills 1.25x.

@@ -1063,6 +1063,61 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     }
   });
 
+  it("BILLS THE PICTURE for a Matroska/WebM carrying a CONTAINER CLOCK OFFSET -- an UNBOUNDED overbill", async () => {
+    // THE BUG, END TO END, on the bytes actually handed to the transport.
+    //
+    // Matroska's `DURATION` tag is an END TIMESTAMP MEASURED FROM ZERO -- a
+    // POSITION, not a LENGTH -- and it was tier 1, returning before any origin
+    // guard could be consulted. So the moment the container carries a clock
+    // offset, the tag overstates the picture BY EXACTLY THAT OFFSET, and nothing
+    // bounds the offset: measured 1.05x at 0.5 s, 2.00x at 10 s, 4.00x at 30 s.
+    //
+    // Here: a 1 s picture whose container clock starts at 2 s. The tag says
+    // 00:00:03, so 3 s of voice is uploaded for a 1 s picture, THE SERVER BILLS
+    // THE DURATION OF THE AUDIO IT IS GIVEN -- a 3.00x overcharge -- and the
+    // deliverable's picture freezes two thirds of the way through.
+    //
+    // Reachable from `-copyts` (the standard TS -> MKV archive remux, exercised
+    // here as the third case), from `-output_ts_offset`, and from any Matroska
+    // muxer that starts its tracks at a nonzero timecode. Only Matroska/WebM are
+    // exposed, because only they carry the tag.
+    for (const [name, video, picture] of [
+      ["mkv", fx.videoClockOffsetMkv, 1.0],
+      ["webm", fx.videoClockOffsetWebm, 1.0],
+      ["copyts_mkv", fx.videoCopytsMkv, 1.023],
+    ] as const) {
+      const output = join(dir, `clock_offset_${name}.mp4`);
+      const { client, uploadedVoice } = stubClient();
+
+      await duckMusicUnderSpeech({
+        video,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      });
+
+      // What was actually uploaded, and therefore actually BILLED.
+      expect(uploadedVoice, name).toHaveLength(1);
+      const billedPath = join(dir, `billed_clock_offset_${name}.m4a`);
+      await writeFile(billedPath, uploadedVoice[0]!.bytes);
+      const billed = await probeVideo(billedPath, "ffprobe");
+      // The picture's own second (plus at most one AAC frame of copy overshoot).
+      // NEVER the tag's 3 s, which is the picture's END POSITION on an offset clock.
+      expect(billed.durationSeconds, name).toBeGreaterThan(picture - 0.1);
+      expect(billed.durationSeconds, name).toBeLessThan(picture + 0.3);
+
+      // ...and billed == delivered: the deliverable is as long as the picture, so
+      // the customer is charged for exactly the seconds they receive.
+      const delivered = await probeVideo(output, "ffprobe");
+      expect(delivered.videoDurationSeconds!, name).toBeLessThan(picture + 0.3);
+      expect(billed.durationSeconds, name).toBeGreaterThanOrEqual(
+        delivered.videoDurationSeconds! - 0.05,
+      );
+    }
+  });
+
   it("accepts a video whose PICTURE is under the cap even though its container runs over it", async () => {
     // 350 s of picture under 365 s of audio (Matroska). The backend gates on the
     // video stream's duration -- audio_ducking.py, whose comments cite an

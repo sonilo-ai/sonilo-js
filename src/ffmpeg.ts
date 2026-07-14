@@ -82,9 +82,10 @@ interface FfprobeStream {
   codec_type?: string;
   codec_name?: string;
   duration?: string;
-  /** Where libavformat thinks this stream's presentation BEGINS. Load-bearing,
-   * and it means two incompatible things depending on the container — which is
-   * exactly why `duration` alone cannot be trusted (see `pictureStartsAtOrigin`). */
+  /** Where libavformat thinks this stream's presentation BEGINS. Load-bearing
+   * twice over: it is the start the `duration` FIELD is measured from (so the
+   * field is a length from HERE, not from the timeline's zero), and on MPEG-TS it
+   * is also the REBASE ORIGIN itself. See THE TIME MODEL. */
   start_time?: string;
   /** Per-track frame accounting. Its VALUE is not a usable cross-check (see
    * `framesAccountedPerTrack`), but its PRESENCE says the demuxer tracks this
@@ -98,11 +99,11 @@ interface FfprobeStream {
 }
 
 interface FfprobeJson {
-  /** `start_time` is the CONTAINER's clock offset: 0 for every file-based
-   * container, but ~1.4 s for MPEG-TS, whose PCR starts at an arbitrary value.
-   * It is what tells a real clock offset apart from a phantom one — see
-   * `measurePictureSpan`. */
-  format?: { duration?: string; start_time?: string };
+  /** `start_time` is the CONTAINER's clock offset (0 for most files, nonzero for
+   * MPEG-TS, and for any container written with `-output_ts_offset`/`-copyts`),
+   * and `format_name` is the demuxer libavformat picked. Both are load-bearing:
+   * together they give the REBASE ORIGIN (see `rebaseOriginSeconds`). */
+  format?: { duration?: string; start_time?: string; format_name?: string };
   streams?: FfprobeStream[];
 }
 
@@ -194,115 +195,148 @@ function finiteSeconds(value: string | undefined): number | null {
   return Number.isFinite(seconds) ? seconds : null;
 }
 
-/** Below this, a `start_time` is "zero" — a picture that begins at the
- * presentation timeline's origin. Deliberately TIGHT (1 ms). The phantom start
- * a fragmented MP4 reports is `2/fps`, which is only 0.08 s at 25 fps; a
- * generous epsilon would wave exactly the file this guard exists for straight
- * back onto the path that underbills it. */
+/** Below this, a timestamp is "zero". Deliberately TIGHT (1 ms). The phantom
+ * start a fragmented MP4 reports is `2/fps`, which is only 0.08 s at 25 fps; a
+ * generous epsilon would wave exactly the file this exists for straight back
+ * onto the path that underbills it. */
 const START_AT_ORIGIN_EPSILON = 1e-3;
 
-/** Does the picture BEGIN where the presentation timeline does?
+/* ===========================================================================
+ * THE TIME MODEL
+ * ===========================================================================
  *
- * This is the question that decides whether the per-stream `duration` FIELD can
- * be read as the picture's length, and it is the check whose absence underbilled
- * every fragmented MP4 by up to 0.80x — cutting the user's speech off.
+ * ONE definition, and every tier below is a conversion INTO it. Six rounds of
+ * billing bugs all had the same shape: each metadata source states the picture's
+ * timing in ITS OWN CONVENTION, and each round hard-coded an assumption about one
+ * of them. So state the target once:
  *
- * libavformat computes `st->duration` as `packet_span - st->start_time`. When
- * `start_time` is 0 — every ordinary MP4/MOV/AVI, and every EDIT-LIST MP4, whose
- * elst rebases presentation to 0 — that subtraction is a no-op and the field IS
- * the picture's length. When `start_time` is NOT 0 the field is a length measured
- * from somewhere else, and `start_time` means one of two incompatible things:
+ *     D  =  E  -  O
  *
- *  - a PHANTOM, on a fragmented MP4. With no moov to describe the track,
- *    libavformat takes `start_time` from the FIRST PACKET IN DECODE ORDER — which,
- *    with B-pyramid, is not the packet with the smallest pts. A 10 s/1 fps
- *    `+frag_keyframe+empty_moov` file reports `start_time=2.000000` while its
- *    picture's packets genuinely begin at pts 0.000061, so the field reads
- *    `8.023` for 10 s of picture. Uploading 8 s of voice under a 10 s picture
- *    bills 0.80x and CUTS THE LAST TWO SECONDS OF SPEECH OFF. The error is
- *    `2/fps`, so it bites hardest at low frame rates — an OBS "fragmented MP4"
- *    screen share, ffmpeg's own streaming recipe, CMAF/DASH segments,
- *    MediaRecorder output. Both fragmented recipes report it, with and without
- *    `nb_frames`, so neither the frame-accounting signal nor the
- *    looks-like-the-container's comparison catches it: the field (8.02) is
- *    nowhere near the container (30.02).
+ *     D = what we bill and what we mux to: THE END OF THE PICTURE ON THE
+ *         PRESENTATION TIMELINE FFMPEG WILL ACTUALLY OUTPUT. Not "how much
+ *         picture there is" -- a picture that starts late still occupies the
+ *         lead-in, and the deliverable runs to where the picture ENDS.
  *
- *  - a REAL clock offset, on MPEG-TS, whose PCR starts at an arbitrary value
- *    (1.4 s, routinely) that every stream's timestamps sit on top of.
+ *     E = the picture's END on the INPUT timeline: max(timestamp + duration)
+ *         over the picture's packets.
  *
- * The two cannot be told apart from the field alone, and they need OPPOSITE
- * corrections (add the phantom back; subtract the real offset). So do not guess:
- * when the picture does not start at the origin, MEASURE it, where both are
- * resolved against the packets themselves. That costs a demux — but ONLY for
- * fragmented MP4 and MPEG-TS. Every mainstream container (MP4, MOV, MKV, WebM,
- * AVI, and the edit-list MP4 that is the commonest video on earth) reports
- * `start_time=0.000000` and stays on the cheap metadata path.
+ *     O = the REBASE ORIGIN: the input timestamp ffmpeg maps to output zero
+ *         (see `rebaseOriginSeconds`).
  *
- * A missing `start_time` is treated as zero: that is the pre-existing reading,
- * and no container in the matrix omits it. */
-function pictureStartsAtOrigin(stream: FfprobeStream): boolean {
-  const start = finiteSeconds(stream.start_time);
-  return start === null || start <= START_AT_ORIGIN_EPSILON;
+ * The conventions each source is written in, MEASURED (never assumed) across the
+ * container matrix, and the correction each therefore needs:
+ *
+ *   source                        | convention                    | E is...
+ *   ------------------------------|-------------------------------|-----------------
+ *   format.duration               | max over ALL streams          | NOT the picture. Never used here.
+ *   streams[].duration (field)    | a LENGTH from the stream's    | field + stream.start_time
+ *                                 | own start: libavformat sets   |
+ *                                 | it to packet_span - start_time|
+ *   streams[].duration (backfill) | the CONTAINER's duration,     | unrelated to the picture. Rejected.
+ *                                 | copied in when the demuxer    |
+ *                                 | cannot time the track         |
+ *   tags.DURATION (Matroska)      | an END POSITION from the      | the tag itself
+ *                                 | container's zero -- a         |
+ *                                 | position, NOT a length        |
+ *   raw packet pts                | the CODED timeline; an edit   | max(pts + duration)
+ *                                 | list is NOT applied and       |
+ *                                 | surfaces as negative pts      |
+ *
+ * Both metadata conversions were verified to hold exactly (`tag == E`, and
+ * `field + start_time == E`, on every container in the matrix, at clock offsets
+ * of 0.5/2/10/30 s). But they are only EXPLOITED where the conversion is the
+ * IDENTITY -- i.e. where the origin is already zero, so the correction is a
+ * no-op and the source's convention cannot matter. Anything needing a nonzero
+ * correction is MEASURED instead, because a measurement observes E directly
+ * rather than trusting a muxer to have shared libavformat's bookkeeping. That
+ * single rule is what subsumes all six rounds of special cases.
+ * ======================================================================== */
+
+/** O: THE REBASE ORIGIN — the input timestamp ffmpeg maps to output zero.
+ *
+ * This is the one irreducibly CONTAINER-DEPENDENT quantity in the model, and it
+ * is not a matter of taste: `pcr.ts` and `copyts.mp4` (the standard TS -> MP4
+ * archive remux) are IDENTICAL on every timing field ffprobe reports --
+ * format.start_time=4.272, stream.start_time=4.400, duration=10.000, packets
+ * spanning 4.400..14.400 -- and their delivered pictures differ by 0.128 s
+ * (10.000 vs 10.128). No function of the metadata can tell them apart. Only the
+ * demuxer's identity can, so the model reads it:
+ *
+ *  - MPEG-TS / MPEG-PS (libavformat flags these AVFMT_TS_DISCONT: a broadcast
+ *    clock with no meaningful file-relative zero, free to wrap and jump).
+ *    ffmpeg discards that clock and zeroes the stream on ITS OWN first
+ *    timestamp, so O is the PICTURE's `start_time`, not the container's.
+ *    Measured: a TS whose PCR starts at 4.4 and whose picture ends at 14.4
+ *    delivers exactly 10.0 s of picture.
+ *
+ *  - Every file-based container (MP4, MOV, MKV, WebM, AVI, FLV, fragmented MP4).
+ *    ffmpeg subtracts the CONTAINER's `start_time` (`ts_offset = -start_time`),
+ *    so O is `format.start_time` -- even where that differs from the picture's
+ *    own start, which is precisely the FLV case: an FLV reports
+ *    format.start_time=0.057 and a video stream starting at 0.080, ffmpeg
+ *    rebases by 0.057, and the picture therefore lands at [0.023, 10.023] in the
+ *    deliverable. Billing on the picture's own first packet instead (0.080)
+ *    lands 0.021 s short -- the picture outlives the audio, leaving a one-frame
+ *    silent tail, and the customer's last 21 ms of speech is never uploaded.
+ *
+ * NOT the picture's first PACKET, ever, in either branch. That was the old
+ * reading, and it is what made the FLV underbill and forced a zero-clamp to stop
+ * an edit list's negative pts from dragging the origin below zero. The origin now
+ * comes only from DECLARED starts, which an edit list rebases to 0 for us, so a
+ * negative pts can no longer reach it and no clamp is needed. */
+function rebaseOriginSeconds(format: FfprobeJson["format"], stream: FfprobeStream): number {
+  const names = (format?.format_name ?? "").split(",");
+  const discontinuous = names.some((n) => n === "mpegts" || n === "mpegtsraw" || n === "mpeg");
+  const declared = discontinuous
+    ? finiteSeconds(stream.start_time)
+    : finiteSeconds(format?.start_time);
+  return declared ?? 0;
 }
 
-/** MEASURE the picture from its own packets: where its last frame ENDS on the
- * presentation timeline, measured from that timeline's ORIGIN.
+/** Is `seconds` close enough to zero that a correction by it is a no-op? */
+function isZero(seconds: number): boolean {
+  return Math.abs(seconds) <= START_AT_ORIGIN_EPSILON;
+}
+
+/** E, MEASURED: the picture's END on the input timeline, from its own packets.
  *
- *     duration = max(timestamp + packet duration) - origin
+ *     E = max(timestamp + packet duration)
  *
- * Expressed as an END minus an ORIGIN, deliberately, rather than as the span
- * `max - min` it used to be. `max - min` is wrong in BOTH directions, and each
- * error is a real file:
+ * An END, deliberately -- never the span `max - min`, which is wrong in BOTH
+ * directions, and each error is a real file:
  *
- *  - It OVERBILLS an EDIT-LIST MP4 by 1.25x. Raw packet timestamps do NOT have
- *    the edit list applied, and an elst surfaces as NEGATIVE pts: `ffmpeg -ss 2
- *    -c copy` (and every iPhone trim) keeps all 250 coded frames of a 10 s
- *    source with pts running -2.000 .. 8.000. The span is 10.000; the picture
- *    the viewer receives is 8.000. Frames at negative pts are precisely the
- *    frames the edit list DISCARDS, so the origin is CLAMPED AT ZERO and they
- *    stop inflating the measurement. (This was latent: the only thing keeping an
- *    edit-list file out of this function was an `nb_frames` presence check, and
- *    `nb_frames` is absent on exactly the fragmented MP4s that now measure here.)
+ *  - `max - min` OVERBILLS an EDIT-LIST MP4 by 1.25x. Raw packet timestamps do
+ *    NOT have the edit list applied, and an elst surfaces as NEGATIVE pts:
+ *    `ffmpeg -ss 2 -c copy` (and every iPhone trim) keeps all 250 coded frames
+ *    of a 10 s source with pts running -2.000 .. 8.000. The span is 10.000; the
+ *    picture the viewer receives is 8.000. Taking the END alone ignores min
+ *    entirely, so the discarded frames cannot inflate anything -- and, unlike a
+ *    clamp bolted onto the origin, that is true by CONSTRUCTION rather than by
+ *    a guard someone has to remember to keep.
  *
- *  - It UNDERBILLS a fragmented MP4, whose picture may genuinely begin part-way
- *    into the timeline (pts 0.4 at 5 fps). Subtracting that 0.4 bills 10.0 s for
- *    a picture that runs to 10.4 s and CUTS THE SPEECH OFF. The picture occupies
- *    [0, 10.4] of the deliverable; its duration is where it ENDS.
- *
- * The origin is zero for every file-based container. The one exception is
- * MPEG-TS, which starts its PCR at an arbitrary offset (1.4 s, routinely) that
- * every stream's timestamps sit on top of and that ffmpeg subtracts on output —
- * so there, and ONLY there, the picture's own first packet establishes the
- * origin. The CONTAINER's `start_time` is what distinguishes the two: it is
- * 0.000000 for a fragmented MP4 (whose per-STREAM start_time is a phantom) and
- * ~1.4 for MPEG-TS (whose offset is real). Clamped at zero either way, so a
- * container that reports a clock offset AND carries an edit list cannot revive
- * the 1.25x.
+ *  - `max - min` UNDERBILLS a picture that genuinely begins part-way into the
+ *    timeline (a fragmented MP4 at pts 0.4; an MKV whose video track starts
+ *    0.5 s after its audio). Subtracting that lead-in bills 10.0 s for a picture
+ *    that runs to 10.4 s and CUTS THE SPEECH OFF. The picture occupies
+ *    [0.4, 10.4] of the deliverable; the deliverable is as long as where it ENDS.
  *
  * Timestamps, not a packet COUNT divided by a frame rate: MPEG-TS reports
- * `avg_frame_rate=0/0`, so the old count/fps measurement returned null for
- * exactly the container that needs measuring most. Falls back from `pts_time`
- * to `dts_time` because AVI carries no presentation timestamps at all
+ * `avg_frame_rate=0/0`, so a count/fps measurement returns nothing for exactly
+ * the container that needs measuring most. Falls back from `pts_time` to
+ * `dts_time` because AVI carries no presentation timestamps at all
  * (`pts_time=N/A` on every packet), and takes the max rather than the last
  * because B-frames put pts out of order.
  *
- * NOT "authoritative and container-agnostic", as this comment used to claim —
- * that claim is what let the edit-list flaw sit here unguarded. It is a
- * measurement of RAW packet timestamps, which are the CODED timeline, not the
- * PRESENTED one; the zero-clamp is what reconciles the two, and it is only
- * sound because the sole thing standing between them (an edit list) can only
- * ever DISCARD leading frames, never add any.
- *
- * Demuxes, never decodes: 0.05 s (mp4) / 0.08 s (mkv) / 0.15 s (ts) on a
- * 287 MB 4K file. Only containers whose picture does not start at the timeline
- * origin reach it — fragmented MP4 and MPEG-TS; MP4/MOV/MKV/WebM/AVI, edit-list
- * MP4 included, are answered from the probe already in hand. Returns null when
- * the picture has no timestamped packets at all, which is a file with no picture
- * to bill for. */
-async function measurePictureSpan(
+ * Demuxes, never decodes: measured 543 ms (MPEG-TS) / 160 ms (fragmented MP4) on
+ * a 649 MB 4K file. Only files whose metadata needs a nonzero correction reach it
+ * -- MPEG-TS, fragmented MP4, FLV, and the rare container carrying a clock
+ * offset. MP4/MOV/MKV/WebM/AVI, edit-list MP4 included, are answered from the
+ * probe already in hand (23/22/57 ms) and never demux. Returns null when the
+ * picture has no timestamped packets at all, which is a file with no picture to
+ * bill for. */
+async function measurePictureEnd(
   video: string,
   streamIndex: number | undefined,
-  containerStartSeconds: number,
   ffprobePath: string,
 ): Promise<number | null> {
   // Select the picture by ABSOLUTE index, not `v:0`: in a file that also
@@ -315,7 +349,6 @@ async function measurePictureSpan(
     "-of", "csv=p=0",
     video,
   ]);
-  let first: number | null = null;
   let end: number | null = null;
   for (const line of stdout.split("\n")) {
     if (line.length === 0) continue;
@@ -327,97 +360,123 @@ async function measurePictureSpan(
     if (at === null) continue;
     const dur = Number(durText);
     const until = at + (Number.isFinite(dur) && dur > 0 ? dur : 0);
-    if (first === null || at < first) first = at;
     if (end === null || until > end) end = until;
   }
-  if (first === null || end === null) return null;
-  // Only a container that declares its own clock offset (MPEG-TS) gets to move
-  // the origin off zero, and even then never below it: a negative pts is a frame
-  // an edit list throws away, not a timeline that starts early.
-  const origin =
-    containerStartSeconds > START_AT_ORIGIN_EPSILON ? Math.max(0, first) : 0;
-  const duration = end - origin;
-  return duration > 0 ? duration : null;
+  return end;
 }
 
-/** The PICTURE's own duration — the length of picture the viewer receives, and
- * the length the ducking API bills on. NEVER the container's `format.duration`,
- * which is ffprobe's maximum over ALL streams: for a video whose audio outlives
- * its picture (routine encoder padding) that is the AUDIO's length, and billing
- * it overcharges for seconds nobody receives.
+/** D: the picture's end on the timeline ffmpeg will output — the length of
+ * picture the viewer receives, the length the deliverable runs to, and the length
+ * the ducking API bills on. See THE TIME MODEL above: D = E - O, and every tier
+ * here is a conversion of one source's convention into E.
  *
- * The sources, in the order they can be trusted:
+ * NEVER the container's `format.duration`, which is ffprobe's maximum over ALL
+ * streams: for a video whose audio outlives its picture (routine encoder padding)
+ * that is the AUDIO's length, and billing it overcharges for seconds nobody
+ * receives.
  *
- *  1. The per-track DURATION TAG (Matroska/WebM). Authored per track by the
- *     muxer; never synthesized from the container.
+ * The tiers, cheapest first. A metadata tier is used ONLY where its conversion
+ * into E is the IDENTITY, so no source's convention is ever relied on under a
+ * nonzero correction; anything else is MEASURED.
  *
- *  2. The per-stream `duration` FIELD (MP4/MOV/AVI), but ONLY when the picture
- *     starts at the presentation timeline's origin (see `pictureStartsAtOrigin`).
- *     libavformat computes the field as `packet_span - start_time`, so it is the
- *     picture's own length exactly when that subtraction is a no-op. That covers
- *     every ordinary MP4/MOV/AVI and -- crucially -- every EDIT-LIST MP4, whose
- *     elst rebases presentation to 0: those legitimately report `duration=8.0`
- *     for 250 coded frames of a 10 s source, and 8.0 is what `-c:v copy`
- *     delivers, so 8.0 is the correct bill.
- *
- *     When the picture does NOT start at the origin the field has been measured
- *     from somewhere else, and that somewhere is either a PHANTOM (fragmented
- *     MP4: `start_time` is the first packet in DECODE order, so the field
- *     understates the picture by `2/fps` and underbills it by up to 0.80x,
- *     cutting the speech off) or a REAL clock offset (MPEG-TS). The two need
- *     opposite corrections and cannot be told apart here, so the file falls
- *     through to tier 3 rather than being guessed at.
- *
- *     The field is ALSO rejected when it is a container backfill. When
- *     libavformat cannot establish a track's timing from its packets (a picture
- *     whose packets are sparse in the byte stream: low frame rate, few frames)
- *     it fills `st->duration` in FROM THE CONTAINER'S Duration element, and
- *     ffprobe then prints a video-stream `duration` that is really the max over
- *     all streams, i.e. the audio's length. An ordinary ffmpeg-written 10 s/1 fps
- *     MKV under a 30 s audio track carries BOTH: `duration='30.023000'` (the
- *     audio's) and `tags.DURATION='00:00:10.000000000'` (the picture's).
- *     Preferring the tag is what keeps that file from being billed at 3.3x. A
- *     backfilled field is spotted by what it is indistinguishable from: it
- *     equals `format.duration`, and its stream carries no per-track frame
- *     accounting (see `framesAccountedPerTrack`) to say the demuxer ever tracked
- *     it separately.
- *
- *  3. MEASURE the picture from its own packets (see `measurePictureSpan`). Not
- *     "authoritative and container-agnostic" -- it reads the CODED timeline, and
- *     has to reconcile it with the PRESENTED one -- but it is the only tier that
- *     resolves a phantom start against reality, and the only one that survives a
- *     container offering no per-track metadata at all (MPEG-TS, FLV).
- *
- * There is deliberately no tier 4. A picture whose length cannot be established
+ * There is deliberately no tier 4. A picture whose end cannot be established
  * makes probeVideo THROW, before anything is uploaded or charged, rather than
  * report a number that came from another stream. */
 async function pictureDurationSeconds(
   video: string,
   stream: FfprobeStream,
+  format: FfprobeJson["format"],
   containerSeconds: number,
-  containerStartSeconds: number,
   ffprobePath: string,
 ): Promise<number | null> {
+  const origin = rebaseOriginSeconds(format, stream);
   const tolerance = frameTolerance(stream);
   // The picture can never outlive the container: format.duration is the maximum
-  // over ALL streams, this one included. A metadata figure that claims otherwise
-  // is not this stream's, whatever it says -- fall through and measure.
+  // over ALL streams, this one included. A figure that claims otherwise is not
+  // this picture's, whatever it says -- fall through and measure.
   const plausible = (seconds: number | null): seconds is number =>
-    seconds !== null && seconds <= containerSeconds + tolerance;
+    seconds !== null && seconds > 0 && seconds <= containerSeconds + tolerance;
 
-  const tagged = durationTagSeconds(stream.tags);
-  if (plausible(tagged)) return tagged;
+  // TIER 1 -- the Matroska/WebM DURATION TAG.
+  //
+  // CONVENTION: an END POSITION measured from the container's zero. A position,
+  // not a length: it already includes any lead-in before the picture starts, and
+  // it already includes any clock offset the container carries.
+  // CORRECTION: E = tag, so D = tag - O.
+  //
+  // Applied ONLY when O is zero, which is every Matroska a `-c copy` remux ever
+  // wrote (that normalizes start_time to 0) and so every everyday MKV/WebM -- the
+  // correction is then a no-op and the tag's convention cannot matter. When the
+  // container DOES carry a clock offset (`-copyts`, the standard TS->MKV
+  // timestamp-preserving archive step; `-output_ts_offset`; any segmented, live
+  // or hardware-recorder muxer that starts its tracks at a nonzero timecode) the
+  // tag overstates the picture by exactly that offset -- 11.606 s billed for a
+  // 10.000 s picture, and 4.00x at a 30 s offset, UNBOUNDED -- and the file is
+  // measured instead of guessed at. Matroska is the only container exposed to
+  // that, because it is the only one carrying this tag; the identical MP4 has no
+  // tag and measures already.
+  if (isZero(origin)) {
+    const tagEnd = durationTagSeconds(stream.tags);
+    if (plausible(tagEnd)) return tagEnd;
+  }
 
+  // TIER 2 -- the per-stream `duration` FIELD (MP4/MOV/AVI/TS).
+  //
+  // CONVENTION: a LENGTH measured from the STREAM's own start. libavformat sets
+  // `st->duration = packet_span - st->start_time`.
+  // CORRECTION: E = field + stream.start_time, so D = field + start_time - O.
+  //
+  // Applied ONLY when that correction is the IDENTITY -- i.e. when the stream's
+  // own start and the rebase origin coincide, so `+ start_time - O` cancels and
+  // the field can be handed back untouched. Written as the one condition it
+  // actually is (`start_time - O == 0`) rather than as two separate zero-checks,
+  // so there is nothing here whose necessity cannot be demonstrated.
+  //
+  // That covers every ordinary MP4/MOV/AVI (both zero), every EDIT-LIST MP4 (the
+  // elst rebases presentation to 0, so those legitimately report `duration=8.0`
+  // for 250 coded frames of a 10 s source -- and 8.0 is what `-c:v copy`
+  // delivers, so 8.0 is the correct bill; measuring on the "disagreement" with
+  // nb_frames/avg_frame_rate would bill 10 s for an 8 s deliverable, a 1.25x
+  // overbill on the commonest video on earth), and a well-formed MPEG-TS, where
+  // the stream's start IS the origin and the PCR offset therefore cancels exactly.
+  //
+  // When it does NOT cancel, the field was measured from a start that is not the
+  // one ffmpeg will rebase by, and the gap is one of two incompatible things that
+  // METADATA CANNOT TELL APART: a PHANTOM (fragmented MP4, where libavformat takes
+  // `start_time` from the first packet in DECODE order -- under B-pyramid not the
+  // smallest pts -- so the field understates the picture by `2/fps`, underbilling
+  // up to 0.80x and CUTTING THE USER'S SPEECH OFF), or a REAL lead-in (an MP4/MKV
+  // whose video track legitimately starts after its audio, where the field
+  // understates the picture by the lead-in). So it is not guessed at: it is
+  // measured.
   const field = positiveSeconds(stream.duration);
-  const looksLikeTheContainers =
+  const streamStart = finiteSeconds(stream.start_time) ?? 0;
+  // The correction `E = field + start_time`, then `D = E - O`. Identity iff zero.
+  const fieldCorrection = streamStart - origin;
+  // A BACKFILLED field is not this stream's at all. When libavformat cannot time
+  // a track from its packets (a picture whose packets are sparse in the byte
+  // stream: low frame rate, few frames) it fills `st->duration` in FROM THE
+  // CONTAINER's Duration, and ffprobe prints a video-stream `duration` that is
+  // really the max over all streams, i.e. the audio's length. An ffmpeg-written
+  // 10 s/1 fps MKV under a 30 s audio track carries BOTH `duration='30.023000'`
+  // (the audio's) and `tags.DURATION='00:00:10.000000000'` (the picture's), and
+  // billing the field is a 3x overcharge. Spotted by what it is
+  // indistinguishable from: it equals `format.duration`, and the stream carries
+  // no per-track frame accounting (see `framesAccountedPerTrack`) to say the
+  // demuxer ever tracked it separately.
+  const backfilledFromContainer =
     field !== null &&
     Math.abs(field - containerSeconds) <= tolerance &&
     !framesAccountedPerTrack(stream);
-  if (plausible(field) && !looksLikeTheContainers && pictureStartsAtOrigin(stream)) {
+  if (isZero(fieldCorrection) && !backfilledFromContainer && plausible(field)) {
     return field;
   }
 
-  return measurePictureSpan(video, stream.index, containerStartSeconds, ffprobePath);
+  // TIER 3 -- MEASURE E from the picture's own packets, and rebase it.
+  const end = await measurePictureEnd(video, stream.index, ffprobePath);
+  if (end === null) return null;
+  const duration = end - origin;
+  return duration > 0 ? duration : null;
 }
 
 export async function probeVideo(video: string, ffprobePath: string): Promise<ProbeResult> {
@@ -451,15 +510,11 @@ export async function probeVideo(video: string, ffprobePath: string): Promise<Pr
   // substituting a figure that may belong to the audio track.
   let videoDurationSeconds: number | null = null;
   if (videoStream !== undefined) {
-    // The CONTAINER's clock offset, not the picture's. 0 for every file-based
-    // container; ~1.4 s for MPEG-TS, whose PCR starts at an arbitrary value.
-    // It is what tells a real offset apart from a fragmented MP4's phantom one.
-    const containerStartSeconds = finiteSeconds(parsed.format?.start_time) ?? 0;
     videoDurationSeconds = await pictureDurationSeconds(
       video,
       videoStream,
+      parsed.format,
       durationSeconds,
-      containerStartSeconds,
       ffprobePath,
     );
     if (videoDurationSeconds === null) {
