@@ -21,6 +21,7 @@ export async function makeFixtures(dir: string): Promise<{
   videoSilent: string;
   videoSilentTrack: string;
   videoLongSilent: string;
+  videoTooLong: string;
   musicMp3: string;
   duckedWav: string;
 }> {
@@ -54,5 +55,23 @@ export async function makeFixtures(dir: string): Promise<{
   run(["-f", "lavfi", "-i", "sine=frequency=220:duration=2", "-c:a", "libmp3lame", musicMp3]);
   const duckedWav = join(dir, "ducked.wav");
   run(["-f", "lavfi", "-i", "sine=frequency=330:duration=1", duckedWav]);
-  return { videoWithAudio, videoSilent, videoSilentTrack, videoLongSilent, musicMp3, duckedWav };
+  // 361 s — one second past the ducking API's 360 s cap. Kept cheap: 1 fps at
+  // 64x36. It carries an audio track so the duration guard is what rejects it,
+  // not the missing-audio guard.
+  const videoTooLong = join(dir, "too_long.mp4");
+  run([
+    "-f", "lavfi", "-i", "testsrc=duration=361:size=64x36:rate=1",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=361",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+    videoTooLong,
+  ]);
+  return {
+    videoWithAudio,
+    videoSilent,
+    videoSilentTrack,
+    videoLongSilent,
+    videoTooLong,
+    musicMp3,
+    duckedWav,
+  };
 }
