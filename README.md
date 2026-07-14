@@ -48,17 +48,43 @@ overly loud render down to target) is uncapped.
 If loudness measurement fails (exotic codecs, unreadable audio), the kit
 silently falls back to absolute-gain behavior rather than failing your render.
 
+## Ducking music under speech
+
+`mixWithVideo` sits the music at a fixed level under the original audio.
+`duckMusicUnderSpeech` goes further: it rides the music down whenever someone
+speaks and back up in the gaps.
+
+```ts
+import { duckMusicUnderSpeech } from "sonilo-video-kit";
+
+await duckMusicUnderSpeech({
+  video: "./interview.mp4",
+  audio: track.audio,
+  output: "./interview.ducked.mp4",
+});
+```
+
+Unlike `mixWithVideo`, which is entirely local and free, this calls the Sonilo
+ducking API and is **billed on your video's duration**. The kit uploads only the
+video's extracted audio track — your picture never leaves the machine and is
+copied into the result untouched.
+
+The API sets the ducking curve itself (speech gate, duck depth, −14 LUFS
+delivery, −1 dBTP ceiling), so there are no volume knobs to pass.
+
+Two requirements are enforced locally, before anything is uploaded or charged:
+the video must have an audio track, and it must run no longer than **360
+seconds**. Either failure throws; the kit never quietly falls back to an
+un-ducked mix. Use `mixWithVideo` for silent or longer videos.
+
 ## Errors
 
 `VideoKitError` (invalid arguments, unreadable video), `FfmpegNotFoundError`
 (ffmpeg/ffprobe missing — message includes install hints), `FfmpegError`
-(ffmpeg failed — carries `exitCode` and `stderrTail`). Errors from the Sonilo
-API pass through as the `sonilo` package's typed errors.
-
-## Roadmap
-
-- `duckMusicUnderSpeech()` — automatic music ducking under dialogue, pending
-  the speech-analysis API.
+(ffmpeg failed — carries `exitCode` and `stderrTail`), `DuckingFailedError` (the
+ducking API accepted the job but could not finish it — carries `code` and
+`refunded`, which reports whether the charge was reversed). Errors from the
+Sonilo API pass through as the `sonilo` package's typed errors.
 
 ## License
 
