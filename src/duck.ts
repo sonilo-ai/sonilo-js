@@ -310,7 +310,16 @@ export async function duckMusicUnderSpeech(
  * Not a compatibility matrix — nothing here is ASSERTED to work. Each candidate
  * is dry-run against THIS file (see `unmuxableError`) and only survives if
  * ffmpeg actually wrote it, so the suggestion is a measurement, not a claim that
- * can rot. Ordered most-permissive first. */
+ * can rot. Ordered most-permissive first.
+ *
+ * The SOURCE's own container is added to this list at call time, not baked in
+ * here: a fixed list can miss the one container that was in front of us the
+ * whole time. Measured case: a low-frame-rate MPEG-TS whose picture ffprobe
+ * reports as width=0 — none of .mkv/.mp4/.mov can hold it (all three die with
+ * "dimensions not set"), but muxing straight back into `.ts` exits 0, because
+ * the MPEG-TS demuxer never needed those dimensions in the first place. A
+ * caller told "re-encode it" for a file their own container could have carried
+ * has been sent on a detour their own source already avoided. */
 const FALLBACK_EXTENSIONS = [".mkv", ".mp4", ".mov"];
 
 /** The video is fine, the API would have taken it — but the picture cannot be
@@ -324,10 +333,17 @@ const FALLBACK_EXTENSIONS = [".mkv", ".mp4", ".mov"];
  * retries successfully and one who guesses again. Each candidate is DRY-RUN, so
  * nothing is promised that ffmpeg has not just demonstrated.
  *
- * When NO container can take the picture, the extension was never the problem:
- * the video stream itself is not stream-copyable (the width=0 MPEG-TS), and no
- * choice of `output` can rescue it. That is a different instruction — re-encode —
- * and it gets a different message. */
+ * The candidates tried are FALLBACK_EXTENSIONS plus the SOURCE's own extension
+ * (see FALLBACK_EXTENSIONS' doc comment) — deduplicated, and never the
+ * extension the caller already asked for and was just refused.
+ *
+ * When none of the candidates ACTUALLY TRIED can take the picture, the message
+ * says exactly that — "none of the containers this checked" — never "no
+ * container can", which is a claim about containers this never tried and would
+ * overclaim. Re-encoding is offered as the reliable fix, not the only possible
+ * one: the video stream itself failed to even get a header written in every
+ * container attempted (the width=0 MPEG-TS is the measured case), which is
+ * strong but not universal evidence that no container will help. */
 async function unmuxableError(
   video: string,
   outputExtension: string,
@@ -337,9 +353,16 @@ async function unmuxableError(
   ffmpegPath: string,
 ): Promise<VideoKitError> {
   const codec = videoCodec ?? "its video stream";
+  const outputExt = outputExtension.toLowerCase();
+  const sourceExtension = extname(video).toLowerCase();
+  const candidates = [...FALLBACK_EXTENSIONS];
+  if (sourceExtension.length >= 2 && !candidates.includes(sourceExtension)) {
+    candidates.push(sourceExtension);
+  }
+
   const alternatives: string[] = [];
-  for (const ext of FALLBACK_EXTENSIONS) {
-    if (ext === outputExtension.toLowerCase()) continue;
+  for (const ext of candidates) {
+    if (ext === outputExt) continue;
     const probed = await probeMuxFeasibility(video, join(workDir, `alt${ext}`), ffmpegPath);
     if (probed.ok) alternatives.push(ext);
   }
@@ -351,19 +374,30 @@ async function unmuxableError(
         `never re-encodes your picture, so the container has to be able to hold it as it is. ` +
         `Give output an extension that can: ${alternatives.map((e) => `"${e}"`).join(", ")} ` +
         `${alternatives.length > 1 ? "all work" : "works"} for this file (checked just now, ` +
-        `against this file). Refused before the ducking API was called, so you have NOT been ` +
-        `charged. ffmpeg said: ${reason}`,
+        `against this file)${alternatives.includes(sourceExtension) ? ` — "${sourceExtension}" ` +
+          `is ${video}'s own container` : ""}. Refused before the ducking API was called, so ` +
+        `you have NOT been charged. ffmpeg said: ${reason}`,
     );
   }
+  const checked = candidates.filter((ext) => ext !== outputExt);
+  // Only claim the source's own container was among the candidates ACTUALLY
+  // TRIED when it genuinely was: it is absent from `checked` when it equals
+  // `outputExt` (already the extension that just failed, so trying it again as
+  // an "alternative" would be vacuous) or was never appended (source has no
+  // extension at all -- an already-atypical `video` path).
+  const sourceNote = checked.includes(sourceExtension)
+    ? `, which includes ${video}'s own container`
+    : "";
   return new VideoKitError(
-    `The picture in ${video} (${codec}) cannot be stream-copied into ANY container — not ` +
-      `"${outputExtension}", and not ${FALLBACK_EXTENSIONS.map((e) => `"${e}"`).join("/")} ` +
-      `either — so muxing the ducked audio back onto it would fail whatever output you chose. ` +
-      `ffmpeg cannot even write a header for this video stream (a low-frame-rate MPEG-TS, for ` +
-      `instance, carries a picture whose dimensions the demuxer never learns). Re-encode it ` +
-      `first and duck the result: \`ffmpeg -i ${video} -c:v libx264 -c:a copy fixed.mp4\`. ` +
-      `Refused before the ducking API was called, so you have NOT been charged. ffmpeg said: ` +
-      `${reason}`,
+    `The picture in ${video} (${codec}) cannot be stream-copied into any of the containers ` +
+      `this checked — not "${outputExtension}" (what you asked for), and not ` +
+      `${checked.map((e) => `"${e}"`).join("/")} either${sourceNote}. That does not rule out ` +
+      `some other container this did not try, but ffmpeg could not even write a header for ` +
+      `this video stream in any of them (a low-frame-rate MPEG-TS, for instance, carries a ` +
+      `picture whose dimensions the demuxer never learns), which is usually a sign no ` +
+      `container will help. The reliable fix is to re-encode it and duck the result: ` +
+      `\`ffmpeg -i ${video} -c:v libx264 -c:a copy fixed.mp4\`. Refused before the ducking API ` +
+      `was called, so you have NOT been charged. ffmpeg said: ${reason}`,
   );
 }
 

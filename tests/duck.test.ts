@@ -523,6 +523,36 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     ).rejects.toThrow(/no audio track/);
   });
 
+  it("reports the container error, not a missing-API-key error, when no client is given, SONILO_API_KEY is unset, and the picture cannot be stream-copied into the caller's container", async () => {
+    // The MUX-FEASIBILITY guard's turn at the same invariant as the test above,
+    // and the more fragile one of the two: duck.ts runs probeMuxFeasibility
+    // immediately before `const client = options.client ?? new SoniloClient()`,
+    // separated from it by only the music-duration guard below it. Move that one
+    // guard past the client construction (an easy, plausible-looking refactor --
+    // "run every input guard together, then construct the client") and this test
+    // is the ONLY one in the suite that would catch it: every other test in this
+    // file supplies a stub `client`, so `new SoniloClient()` -- and therefore the
+    // "Missing API key" throw it would produce with SONILO_API_KEY unset -- never
+    // runs at all, and 36 green tests would say nothing changed.
+    //
+    // h264 into `.webm` can never be stream-copied (WebM takes only VP8/VP9/
+    // AV1), so this call's real, knowable-before-any-charge problem is the
+    // container -- not the absence of an API key it was never going to need
+    // before failing anyway.
+    vi.stubEnv("SONILO_API_KEY", "");
+    const err = await duckMusicUnderSpeech({
+      video: fx.videoWithAudio,
+      audio: fx.musicMp3,
+      output: join(dir, "never_no_client_unmuxable.webm"),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(VideoKitError);
+    const message = (err as VideoKitError).message;
+    expect(message).not.toMatch(/API key/i); // NOT the SDK's missing-key error
+    expect(message).toContain(".webm"); // the real, knowable-in-advance problem
+    expect(message).toMatch(/NOT been charged/i);
+  });
+
   it("validates its arguments", async () => {
     // Asserted on the MESSAGE, not on `toThrow(VideoKitError)`: FfmpegError,
     // FfmpegNotFoundError and DuckingFailedError all extend VideoKitError, so
@@ -638,7 +668,7 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect(await exists(`${output}.ducked.wav`)).toBe(false); // nothing to rescue: nothing was paid for
   });
 
-  it("rejects a low-frame-rate MPEG-TS whose picture has no dimensions BEFORE calling the API", async () => {
+  it("rejects a low-frame-rate MPEG-TS whose picture has no dimensions BEFORE calling the API, and suggests its OWN container rather than telling the user to re-encode", async () => {
     // The nastier half of the same gap, and the one no user could have foreseen.
     // ffprobe reports this file's picture as `width=0 height=0` -- at 1 fps the
     // demuxer never gathers codec parameters from packets that sparse -- yet
@@ -647,9 +677,17 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     // every guard passed, the account was CHARGED, and the mux then died with
     // "dimensions not set" / "Could not write header".
     //
-    // No output extension can save this one: the video stream itself is not
-    // stream-copyable, so the error must say re-encode, not "pick another
-    // container".
+    // The FALLBACK_EXTENSIONS list (.mkv/.mp4/.mov) genuinely cannot hold this
+    // picture either -- all three die the same way. A version of this error that
+    // only ever tried that fixed list would conclude "no container works" and
+    // tell the user to re-encode -- which is FALSE: muxing this exact picture
+    // straight back into its own container, `.ts`, exits 0 (measured: the
+    // MPEG-TS demuxer never needed the dimensions the others choked on).
+    // duckMusicUnderSpeech's `output` is chosen by the caller, not by this file's
+    // own extension, so this call (an ordinary `.mp4` request) genuinely cannot
+    // be muxed -- but the error must point at the container that WOULD work
+    // (the source's own, `.ts`) instead of sending the user on an unnecessary
+    // re-encode.
     const output = join(dir, "no_dimensions.mp4");
     const { client, calls } = stubClient();
 
@@ -664,8 +702,16 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
 
     expect(err).toBeInstanceOf(VideoKitError);
     const message = (err as VideoKitError).message;
-    expect(message).toContain("ANY container"); // no extension rescues this file
-    expect(message).toContain("Re-encode"); // ...so it says what actually would
+    expect(message).toContain(".ts"); // its own container -- the one that actually works
+    expect(message).toContain("own container");
+    // NOT sent on an unnecessary re-encode detour: the "no working container"
+    // branch's specific advice (the example ffmpeg re-encode invocation) must be
+    // absent. (The generic phrase "duckMusicUnderSpeech never re-encodes your
+    // picture" legitimately appears in the branch that DID find a container, so
+    // asserting on that phrase alone would be a false positive.)
+    expect(message).not.toContain("libx264");
+    expect(message).not.toContain("The reliable fix is to re-encode");
+    expect(message).not.toContain("ANY container"); // a working container WAS found
     expect(message).toMatch(/NOT been charged/i);
 
     expect(calls).toEqual([]); // nothing was uploaded, so nothing was charged

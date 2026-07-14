@@ -84,6 +84,11 @@ one (checked against your actual file, not a lookup table). Any failure throws
 before the API is called; the kit never quietly falls back to an un-ducked mix.
 Use `mixWithVideo` for silent or longer videos.
 
+`duckMusicUnderSpeech` always writes the ducked mix's audio track as AAC, so
+`output` must be a container that can carry AAC — `.webm` cannot (it takes only
+Vorbis/Opus), and is rejected before the API is called no matter what picture
+codec your source uses.
+
 Both the 360 s limit and the amount you are billed are measured on the
 **picture**, never on the container. A video whose audio track outlives its
 picture (routine encoder padding; and the norm for `.mkv`/`.webm`) is billed for
