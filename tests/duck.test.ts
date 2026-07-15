@@ -934,6 +934,83 @@ describe.skipIf(!hasFfmpeg)("duckMusicUnderSpeech (requires ffmpeg on PATH)", ()
     expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
   });
 
+  it("clamps the download to output_bytes: a body over the exact size is rejected", async () => {
+    // The server reports the artifact's exact size over the authenticated
+    // channel. A body meaningfully larger than that (here output_bytes + 256 KB,
+    // well past the 64 KB framing margin, yet far under the 300 MB hard ceiling)
+    // is an anomaly and must be refused, and no deliverable must land.
+    const output = join(dir, "clamped_reject.mp4");
+    const { client } = stubClient({
+      status: "succeeded",
+      output_url: "https://r2.example/ducked.wav",
+      output_type: "audio",
+      output_bytes: ducked.byteLength,
+    });
+    const oversized = new Uint8Array(ducked.byteLength + 256 * 1024);
+    const bigFetch = (async () => new Response(oversized)) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: bigFetch,
+      }),
+    ).rejects.toThrow(VideoKitError);
+    expect(await exists(output)).toBe(false); // nothing delivered
+  });
+
+  it("delivers when the body matches the reported output_bytes", async () => {
+    const output = join(dir, "clamped_ok.mp4");
+    const { client } = stubClient({
+      status: "succeeded",
+      output_url: "https://r2.example/ducked.wav",
+      output_type: "audio",
+      output_bytes: ducked.byteLength, // exact size: within the cap
+    });
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked),
+      }),
+    ).resolves.toBe(output);
+    expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
+  });
+
+  it("treats output_bytes: 0 as absent: no empty-file floor, the hard cap still applies, a real body downloads", async () => {
+    // A 0 over the authenticated channel is not a real artifact size (a ducking
+    // mix is never 0 bytes). Pre-fix it became an exact-size floor of 0, so the
+    // non-empty download failed the `total !== 0` check and the whole call threw
+    // -- an empty ducked.wav would only ever "pass" that floor. Now 0 is dropped
+    // like an omitted field: the hard cap alone applies and the real body lands.
+    const output = join(dir, "zero_output_bytes.mp4");
+    const { client } = stubClient({
+      status: "succeeded",
+      output_url: "https://r2.example/ducked.wav",
+      output_type: "audio",
+      output_bytes: 0,
+    });
+
+    await expect(
+      duckMusicUnderSpeech({
+        video: fx.videoWithAudio,
+        audio: fx.musicMp3,
+        output,
+        client,
+        pollIntervalMs: 1,
+        fetch: stubFetch(ducked), // a real, non-empty mix
+      }),
+    ).resolves.toBe(output);
+    expect((await probeVideo(output, "ffprobe")).hasAudio).toBe(true);
+  });
+
   it("names the task id, and never the presigned URL, when the download finally fails", async () => {
     // The task reached `succeeded`, so it is charged and the mix is in R2. If
     // the download can't be completed even after retries, the error must still
