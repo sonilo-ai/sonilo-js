@@ -15,6 +15,41 @@ import { extractAudio, muxVideoWithAudio, probeMuxFeasibility, probeVideo } from
 /** The ducking API rejects voice, video, and music tracks longer than this. */
 export const MAX_DUCKING_DURATION_SECONDS = 360;
 
+/** Absolute hard ceiling on the ducked-mix download — the anti-DoS floor that a
+ * hostile/compromised/MITM'd R2 host CANNOT raise. The kit only ever uploads an
+ * extracted audio track (<= MAX_DUCKING_DURATION_SECONDS); the server never
+ * re-muxes video for this client, so the finished artifact is always an audio
+ * wav of at most a few dozen MB. 300 MB is generous headroom for that while
+ * still bounding memory/disk against an unbounded body. The server's own
+ * expected size (output_bytes, arriving over the AUTHENTICATED channel) is
+ * additionally clamped UNDER this ceiling in effectiveDownloadCap; this constant
+ * is the last-resort bound that holds even when output_bytes is absent or the
+ * server itself is lying. */
+export const MAX_DUCKED_MIX_BYTES = 300 * 1024 * 1024;
+
+/** Slack allowed above the server's exact `output_bytes` before a download is
+ * treated as an anomaly. A FIXED 64 KB, not a percentage: the authenticated
+ * channel gave us the EXACT artifact size, so the only legitimate excess is
+ * negligible container/transfer framing overhead. A fixed small constant stays
+ * negligible at every size (a couple percent of a large artifact would be
+ * megabytes of unbudgeted slack); 64 KB tolerates real overhead without being
+ * exploitable. */
+const OUTPUT_BYTES_MARGIN = 64 * 1024;
+
+/** The cap actually enforced on the download. With the server's authenticated
+ * `output_bytes`, a body more than a hair over it is an anomaly and is rejected
+ * even though it sits under the hard ceiling; without it (older backend), only
+ * the hard ceiling applies. */
+function effectiveDownloadCap(outputBytes?: number): number {
+  // outputBytes reaches here already sanitized to a positive integer or
+  // undefined (awaitDuckingResult). The `> 0` guard is defensive belt-and-braces
+  // so a 0/negative/non-finite value can never widen or, worse, zero the cap.
+  if (typeof outputBytes === "number" && Number.isFinite(outputBytes) && outputBytes > 0) {
+    return Math.min(outputBytes + OUTPUT_BYTES_MARGIN, MAX_DUCKED_MIX_BYTES);
+  }
+  return MAX_DUCKED_MIX_BYTES;
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -251,6 +286,15 @@ export async function duckMusicUnderSpeech(
 
     const duckedPath = join(workDir, "ducked.wav");
     try {
+      // ONE deadline governs the WHOLE post-submit collection. The caller's
+      // timeoutMs is the budget for polling AND the download together, not a
+      // fresh full timeout for each: awaitDuckingResult spends part of it, and
+      // downloadDuckedMix gets only what is LEFT (its `deadline` option). Without
+      // this, a slow/hostile R2 could hold the download for 4 x its own
+      // per-attempt default (~8 min) on TOP of the poll phase, blowing right past
+      // the bound the caller asked for. Established once, here, so poll time is
+      // charged against the same clock the download is bounded by.
+      const overallDeadline = Date.now() + timeoutMs;
       const result = await awaitDuckingResult(client, taskId, {
         pollIntervalMs,
         timeoutMs,
@@ -270,6 +314,16 @@ export async function duckMusicUnderSpeech(
       // The API returns the finished mix already delivered at -14 LUFS / -1 dBTP,
       // so there is no local loudness pass to run.
       await downloadDuckedMix(result.outputUrl, duckedPath, fetchFn, {
+        maxBytes: effectiveDownloadCap(result.outputBytes),
+        // The EXACT size from the authenticated channel, when the backend sent
+        // it: downloadDuckedMix enforces it as a floor so a truncated download is
+        // rejected, not silently written. Undefined for an older backend, where
+        // only the cap applies.
+        ...(result.outputBytes !== undefined ? { expectedBytes: result.outputBytes } : {}),
+        // Whatever poll time did NOT consume is the download's budget. Once it is
+        // gone the download stops instead of starting another full attempt, so a
+        // caller who set timeoutMs is not held materially past it by the download.
+        deadline: overallDeadline,
         ...(signal ? { signal } : {}),
       });
     } catch (err) {

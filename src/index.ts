@@ -2,7 +2,7 @@ export { generateMusicForVideo } from "./generate.js";
 export type { GenerateMusicForVideoOptions, VideoMusicClient } from "./generate.js";
 export { mixWithVideo } from "./mix.js";
 export type { MixWithVideoOptions } from "./mix.js";
-export { duckMusicUnderSpeech, MAX_DUCKING_DURATION_SECONDS } from "./duck.js";
+export { duckMusicUnderSpeech, MAX_DUCKED_MIX_BYTES, MAX_DUCKING_DURATION_SECONDS } from "./duck.js";
 export type { DuckMusicUnderSpeechOptions } from "./duck.js";
 // DuckingClient only: the `client` option genuinely needs it. DuckingResult is
 // deliberately NOT exported -- no public signature mentions it
