@@ -176,6 +176,7 @@ export interface SfxResult {
   type?: string;
   status: "processing" | "succeeded" | "failed" | (string & {});
   audio?: SfxMedia;
+  /** Kept for backward compatibility; no longer populated — video-to-sfx returns audio only. */
   video?: SfxMedia;
   /** Only present when the account's task-field whitelist enables cost. */
   cost?: number;
