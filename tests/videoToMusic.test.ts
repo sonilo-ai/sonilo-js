@@ -75,3 +75,71 @@ describe("videoToMusic.stream", () => {
     expect(calls[0]!.init.signal).toBe(controller.signal);
   });
 });
+
+const ACK = { task_id: "t1", status: "processing" };
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+describe("videoToMusic.submit", () => {
+  it("posts mode and isolate_vocals form fields for an async request", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    const task = await client.videoToMusic.submit({
+      video: new File(["fakevideo"], "clip.mp4"),
+      prompt: "upbeat",
+      mode: "async",
+      isolateVocals: true,
+    });
+    expect(task.task_id).toBe("t1");
+    expect(calls[0]!.url).toBe("https://api.sonilo.com/v1/video-to-music");
+    const form = calls[0]!.init.body as FormData;
+    expect((form.get("video") as File).name).toBe("clip.mp4");
+    expect(form.get("prompt")).toBe("upbeat");
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("isolate_vocals")).toBe("true");
+  });
+
+  it("defaults mode to async when isolateVocals is true and mode is omitted", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      isolateVocals: true,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("isolate_vocals")).toBe("true");
+  });
+
+  it("omits mode and isolate_vocals when neither is set", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({ videoUrl: "https://example.com/v.mp4" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("mode")).toBe(false);
+    expect(form.has("isolate_vocals")).toBe(false);
+  });
+
+  it("rejects isolateVocals with an explicit non-async mode without making a request", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await expect(
+      client.videoToMusic.submit({
+        videoUrl: "https://example.com/v.mp4",
+        mode: "stream",
+        isolateVocals: true,
+      }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    expect(calls.length).toBe(0);
+  });
+
+  it("rejects when both or neither video source is given", async () => {
+    const { client } = mockClient(() => jsonResponse(ACK, 202));
+    await expect(
+      client.videoToMusic.submit({
+        video: new Blob(["x"]),
+        videoUrl: "https://example.com/v.mp4",
+      }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    await expect(client.videoToMusic.submit({})).rejects.toBeInstanceOf(SoniloError);
+  });
+});
