@@ -1,6 +1,6 @@
 import type { SoniloClient } from "../client.js";
 import { SoniloError, TaskFailedError, TaskTimeoutError } from "../errors.js";
-import type { SfxResult, WaitOptions } from "../types.js";
+import type { BaseTaskResult, SfxResult, WaitOptions } from "../types.js";
 
 export const DEFAULT_POLL_INTERVAL_MS = 2000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 600_000;
@@ -21,20 +21,35 @@ function validateWaitArgs(pollInterval: number, timeout: number): void {
 export class Tasks {
   constructor(private readonly client: SoniloClient) {}
 
-  /** Fetch current task state. Never throws on a failed status. */
-  async get(taskId: string): Promise<SfxResult> {
+  /**
+   * Fetch current task state. Never throws on a failed status.
+   *
+   * Generic over the result shape so callers can request the endpoint-
+   * specific type, e.g. `client.tasks.get<MusicTaskResult>(taskId)`.
+   * Defaults to `SfxResult` for back-compat.
+   */
+  async get<T extends BaseTaskResult = SfxResult>(taskId: string): Promise<T> {
     const res = await this.client.request(`/v1/tasks/${encodeURIComponent(taskId)}`);
-    return (await res.json()) as SfxResult;
+    return (await res.json()) as T;
   }
 
-  /** Poll until the task is terminal; throw on failure or deadline. */
-  async wait(taskId: string, opts: WaitOptions = {}): Promise<SfxResult> {
+  /**
+   * Poll until the task is terminal; throw on failure or deadline.
+   *
+   * Generic over the result shape, e.g.
+   * `client.tasks.wait<MusicTaskResult>(taskId)`. Defaults to `SfxResult`
+   * for back-compat.
+   */
+  async wait<T extends BaseTaskResult = SfxResult>(
+    taskId: string,
+    opts: WaitOptions = {},
+  ): Promise<T> {
     const pollInterval = opts.pollInterval ?? DEFAULT_POLL_INTERVAL_MS;
     const timeout = opts.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
     validateWaitArgs(pollInterval, timeout);
     const deadline = performance.now() + timeout;
     for (;;) {
-      const result = await this.get(taskId);
+      const result = await this.get<T>(taskId);
       if (result.status === "succeeded") return result;
       if (result.status === "failed") {
         const message = result.error?.message || "Generation failed";

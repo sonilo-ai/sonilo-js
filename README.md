@@ -36,6 +36,32 @@ const track = await sonilo.videoToMusic.generate({
 await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" });
 ```
 
+### Vocal isolation (async)
+
+Splitting out a vocals-only stem requires the async task API — the plain
+stream above doesn't support it. Submit with `isolateVocals: true` (this
+implies `mode: "async"` if you don't set `mode` yourself) and poll with
+`client.tasks.wait<MusicTaskResult>()`:
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import type { MusicTaskResult } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+const task = await client.videoToMusic.submit({
+  video: "./my_video.mp4",
+  prompt: "upbeat, energetic",
+  isolateVocals: true,
+});
+const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
+
+// `audio` is always an array for async video-to-music (one entry per
+// output stream); `vocals` and `mux` are only present with isolateVocals.
+await writeFile("mix.m4a", await download(result.audio[0]!));
+await writeFile("vocals.m4a", await download(result.vocals!));
+```
+
 ## Configuration
 
 ```ts

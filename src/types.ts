@@ -101,8 +101,18 @@ export interface VideoToMusicParams {
   /** Bounds the stream: aborting this cancels the in-flight generation.
    * Passed straight through to `fetch` — it is never rewrapped as
    * RequestTimeoutError, since the client's own absolute timeout does not
-   * apply to streaming music generation. */
+   * apply to streaming music generation. Only meaningful for `stream()`/
+   * `generate()`; `submit()` ignores it. */
   signal?: AbortSignal;
+  /** "stream" (the default, used by `stream()`/`generate()`) or "async"
+   * (required for `submit()`, and for `isolateVocals`). Only consulted by
+   * `submit()` — `stream()`/`generate()` always request a stream. */
+  mode?: "stream" | "async";
+  /** Split the generated track into a vocals-only stem alongside the mix.
+   * Requires `mode: "async"`; if `mode` is left unset it defaults to
+   * "async" automatically. Only usable via `submit()` — the backend
+   * rejects it on the plain stream. */
+  isolateVocals?: boolean;
 }
 
 export interface AccountServices {
@@ -170,19 +180,29 @@ export interface SfxError {
   message?: string;
 }
 
-/** State of an SFX task (`tasks.get`) or its final result (`wait`/`generate`). */
-export interface SfxResult {
+/**
+ * Common shape of any polled task (`tasks.get`/`tasks.wait`), regardless of
+ * which endpoint created it. `Tasks.get`/`Tasks.wait` are generic over this so
+ * each endpoint's result type (e.g. `SfxResult`, `MusicTaskResult`) can add
+ * its own `audio`/media fields while sharing the status/error/refund
+ * bookkeeping the poller relies on.
+ */
+export interface BaseTaskResult {
   task_id: string;
   type?: string;
   status: "processing" | "succeeded" | "failed" | (string & {});
-  audio?: SfxMedia;
-  /** Kept for backward compatibility; no longer populated — video-to-sfx returns audio only. */
-  video?: SfxMedia;
   /** Only present when the account's task-field whitelist enables cost. */
   cost?: number;
   error?: SfxError;
   refunded?: boolean;
   [key: string]: unknown;
+}
+
+/** State of an SFX task (`tasks.get`) or its final result (`wait`/`generate`). */
+export interface SfxResult extends BaseTaskResult {
+  audio?: SfxMedia;
+  /** Kept for backward compatibility; no longer populated — video-to-sfx returns audio only. */
+  video?: SfxMedia;
 }
 
 export interface TextToSfxParams {
@@ -197,6 +217,40 @@ export interface VideoToSfxParams {
   prompt?: string;
   segments?: SfxSegment[];
   audioFormat?: SfxAudioFormat;
+}
+
+/** One decoded audio stream of an async video-to-music result. Unlike SFX,
+ * `audio` on a music task is always an array — even without `isolateVocals` —
+ * since a music generation can carry more than one output stream. */
+export interface MusicMediaEntry extends SfxMedia {
+  stream_index: number;
+  sample_rate?: number;
+  channels?: number;
+}
+
+/** One muxed audio+video-aligned output, present only when `isolateVocals`
+ * is set. */
+export interface MusicMuxEntry extends SfxMedia {
+  stream_index: number;
+}
+
+export interface MusicTitle {
+  title: string;
+  summary?: string;
+  display_tags?: string[];
+}
+
+/** State of an async video-to-music task (`tasks.get`) or its final result
+ * (`tasks.wait<MusicTaskResult>()`). Only reachable via `videoToMusic.submit()`
+ * with `mode: "async"`. */
+export interface MusicTaskResult extends BaseTaskResult {
+  audio?: MusicMediaEntry[];
+  /** Vocals-only stem; present only when `isolateVocals` was requested. */
+  vocals?: SfxMedia;
+  /** Muxed output per stream; present only when `isolateVocals` was requested. */
+  mux?: MusicMuxEntry[];
+  title?: MusicTitle;
+  duration_seconds?: number;
 }
 
 export interface WaitOptions {
