@@ -31,5 +31,10 @@ jobs:
           version: npm run version
           publish: npm run release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT (not the default GITHUB_TOKEN) so changesets can open the
+          # "Version Packages" PR: the org policy disables "Allow GitHub
+          # Actions to create and approve pull requests" for GITHUB_TOKEN.
+          # CHANGESET_PAT needs Contents + Pull requests: write on this repo.
+          # npm publishing still uses OIDC (id-token), independent of this token.
+          GITHUB_TOKEN: ${{ secrets.CHANGESET_PAT }}
           NPM_CONFIG_PROVENANCE: "true"
