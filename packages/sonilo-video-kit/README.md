@@ -10,8 +10,10 @@ Debian/Ubuntu: `apt-get install ffmpeg`) — or pass `ffmpegPath`/`ffprobePath`
 ## Installation
 
 ```bash
-npm install sonilo-video-kit
+npm install sonilo sonilo-video-kit
 ```
+
+`sonilo` (the core client) is a required peer dependency and must be installed alongside the kit.
 
 ## Quickstart
 
