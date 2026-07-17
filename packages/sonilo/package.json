@@ -5,7 +5,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sonilo-ai/sonilo-js.git"
+    "url": "git+https://github.com/sonilo-ai/sonilo-js.git",
+    "directory": "packages/sonilo"
   },
   "type": "module",
   "main": "./dist/index.cjs",

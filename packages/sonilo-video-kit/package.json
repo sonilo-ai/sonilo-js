@@ -5,7 +5,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sonilo-ai/sonilo-video-kit.git"
+    "url": "git+https://github.com/sonilo-ai/sonilo-js.git",
+    "directory": "packages/sonilo-video-kit"
   },
   "type": "module",
   "main": "./dist/index.cjs",
@@ -36,11 +37,12 @@
     "test": "vitest run",
     "prepack": "npm run build"
   },
-  "dependencies": {
-    "sonilo": "^0.2.0"
+  "peerDependencies": {
+    "sonilo": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
+    "sonilo": "^0.3.0",
     "tsup": "^8.0.2",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
