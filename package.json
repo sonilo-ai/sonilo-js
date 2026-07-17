@@ -1,54 +1,21 @@
 {
-  "name": "sonilo",
-  "version": "0.3.0",
-  "description": "Official TypeScript/JavaScript client for the Sonilo API",
+  "name": "sonilo-js-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for the Sonilo JavaScript SDK and companion packages",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/sonilo-ai/sonilo-js.git"
-  },
-  "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
-      }
-    }
-  },
-  "files": [
-    "dist"
+  "workspaces": [
+    "packages/*"
   ],
-  "sideEffects": false,
-  "engines": {
-    "node": ">=18"
-  },
   "scripts": {
-    "build": "tsup",
-    "lint": "tsc --noEmit",
-    "test": "vitest run"
+    "build": "npm run build -w sonilo && npm run build -w sonilo-video-kit",
+    "lint": "npm run build -w sonilo && npm run lint --workspaces --if-present",
+    "test": "npm run build -w sonilo && npm run test --workspaces --if-present",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "changeset publish"
   },
   "devDependencies": {
-    "@types/node": "^20.19.43",
-    "tsup": "^8.0.2",
-    "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
-  },
-  "keywords": [
-    "sonilo",
-    "music",
-    "generation",
-    "text-to-music",
-    "video-to-music",
-    "ai",
-    "sfx",
-    "sound-effects"
-  ]
+    "@changesets/cli": "^2.27.9"
+  }
 }
