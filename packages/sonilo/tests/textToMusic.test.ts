@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SoniloClient } from "../src/client.js";
 import { RequestTimeoutError } from "../src/errors.js";
 import type { StreamEvent } from "../src/types.js";
@@ -97,5 +97,30 @@ describe("textToMusic.stream", () => {
     });
     controller.abort();
     await expect(promise).rejects.not.toBeInstanceOf(RequestTimeoutError);
+  });
+});
+
+describe("textToMusic.submit", () => {
+  it("posts async mode + output_format and returns the ack", async () => {
+    const fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ task_id: "tm1", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    const task = await client.textToMusic.submit({
+      prompt: "lofi",
+      duration: 10,
+      outputFormat: "wav",
+    });
+    expect(task).toEqual({ task_id: "tm1", status: "processing" });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://api.sonilo.com/v1/text-to-music");
+    const form = init.body;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("output_format")).toBe("wav");
+    expect(form.get("prompt")).toBe("lofi");
+    expect(form.get("duration")).toBe("10");
   });
 });
