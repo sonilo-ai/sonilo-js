@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { SoniloClient } from "../src/client.js";
 import { SoniloError } from "../src/errors.js";
 import { b64, mockClient, ndjsonResponse } from "./helpers.js";
 
@@ -112,11 +113,11 @@ describe("videoToMusic.submit", () => {
     expect(form.get("isolate_vocals")).toBe("true");
   });
 
-  it("omits mode and isolate_vocals when neither is set", async () => {
+  it("defaults mode to async and omits isolate_vocals when neither is set", async () => {
     const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
     await client.videoToMusic.submit({ videoUrl: "https://example.com/v.mp4" });
     const form = calls[0]!.init.body as FormData;
-    expect(form.has("mode")).toBe(false);
+    expect(form.get("mode")).toBe("async");
     expect(form.has("isolate_vocals")).toBe(false);
   });
 
@@ -141,5 +142,39 @@ describe("videoToMusic.submit", () => {
       }),
     ).rejects.toBeInstanceOf(SoniloError);
     await expect(client.videoToMusic.submit({})).rejects.toBeInstanceOf(SoniloError);
+  });
+
+  it("forwards preserve_speech, output_format and ducking; defaults mode async", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "m1", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToMusic.submit({
+      videoUrl: "https://x/v.mp4",
+      preserveSpeech: true,
+      outputFormat: "wav",
+      ducking: false,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("preserve_speech")).toBe("true");
+    expect(form.get("output_format")).toBe("wav");
+    expect(form.get("ducking")).toBe("false");
+  });
+
+  it("omits ducking when unset so the backend default applies", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "m2", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToMusic.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("ducking")).toBe(false);
   });
 });
