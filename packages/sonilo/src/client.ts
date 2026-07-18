@@ -5,6 +5,7 @@ import { TextToMusic } from "./resources/textToMusic.js";
 import { VideoToMusic } from "./resources/videoToMusic.js";
 import { TextToSfx } from "./resources/textToSfx.js";
 import { VideoToSfx } from "./resources/videoToSfx.js";
+import { VideoToVideoMusic } from "./resources/videoToVideoMusic.js";
 import { VERSION } from "./version.js";
 
 export interface SoniloClientOptions {
@@ -34,6 +35,7 @@ export class SoniloClient {
   readonly videoToMusic: VideoToMusic;
   readonly textToSfx: TextToSfx;
   readonly videoToSfx: VideoToSfx;
+  readonly videoToVideoMusic: VideoToVideoMusic;
 
   constructor(options: SoniloClientOptions = {}) {
     const envKey =
@@ -54,6 +56,7 @@ export class SoniloClient {
     this.videoToMusic = new VideoToMusic(this);
     this.textToSfx = new TextToSfx(this);
     this.videoToSfx = new VideoToSfx(this);
+    this.videoToVideoMusic = new VideoToVideoMusic(this);
   }
 
   /**
