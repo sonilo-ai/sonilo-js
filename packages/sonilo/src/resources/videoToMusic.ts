@@ -52,9 +52,19 @@ export class VideoToMusic {
       throw new SoniloError("Provide exactly one of video or videoUrl");
     }
     let mode = params.mode;
-    if (params.isolateVocals && mode === undefined) mode = "async";
-    if (params.isolateVocals && mode !== "async") {
-      throw new SoniloError('isolateVocals requires mode: "async"');
+    const needsAsync =
+      params.isolateVocals ||
+      params.preserveSpeech ||
+      params.ducking !== undefined ||
+      params.outputFormat === "wav";
+    // submit() always wants an async task ack, never a stream. Default to
+    // async; only object if the caller explicitly asked for stream while
+    // also requesting an async-only feature.
+    if (mode === undefined) mode = "async";
+    if (needsAsync && mode !== "async") {
+      throw new SoniloError(
+        'isolateVocals/preserveSpeech/ducking/outputFormat "wav" require mode: "async"',
+      );
     }
     const form = new FormData();
     if (params.video !== undefined) {
@@ -67,9 +77,18 @@ export class VideoToMusic {
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
-    if (mode !== undefined) form.set("mode", mode);
+    form.set("mode", mode);
+    if (params.preserveSpeech !== undefined) {
+      form.set("preserve_speech", String(params.preserveSpeech));
+    }
     if (params.isolateVocals !== undefined) {
       form.set("isolate_vocals", String(params.isolateVocals));
+    }
+    if (params.outputFormat !== undefined) {
+      form.set("output_format", params.outputFormat);
+    }
+    if (params.ducking !== undefined) {
+      form.set("ducking", String(params.ducking));
     }
     const res = await this.client.request("/v1/video-to-music", {
       method: "POST",
