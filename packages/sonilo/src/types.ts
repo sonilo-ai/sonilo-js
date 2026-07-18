@@ -77,6 +77,10 @@ export interface TextToMusicParams {
   prompt: string;
   duration: number;
   segments?: Segment[];
+  /** "stream" (default) or "async" (required by `submit()` and `output_format: "wav"`). */
+  mode?: "stream" | "async";
+  /** Container for the async result. `wav` requires `mode: "async"`. Defaults to m4a server-side. */
+  outputFormat?: "m4a" | "wav";
   /** Bounds the stream: aborting this cancels the in-flight generation.
    * Passed straight through to `fetch` — it is never rewrapped as
    * RequestTimeoutError, since the client's own absolute timeout does not
@@ -113,6 +117,16 @@ export interface VideoToMusicParams {
    * "async" automatically. Only usable via `submit()` — the backend
    * rejects it on the plain stream. */
   isolateVocals?: boolean;
+  /** Keep the source speech/vocals in the async result. Current name for
+   * `isolateVocals`; both are accepted and OR'd server-side. Requires
+   * `mode: "async"` (auto-selected by `submit()`). */
+  preserveSpeech?: boolean;
+  /** Container for the async result. `wav` requires async. Defaults to m4a. */
+  outputFormat?: "m4a" | "wav";
+  /** Duck the generated music under the source voice at finalize time.
+   * Default-ON server-side in async mode: leave unset to keep it on, pass
+   * `false` to opt out. Free, best-effort; only valid on `submit()`. */
+  ducking?: boolean;
 }
 
 export interface AccountServices {
@@ -249,6 +263,8 @@ export interface MusicTaskResult extends BaseTaskResult {
   vocals?: SfxMedia;
   /** Muxed output per stream; present only when `isolateVocals` was requested. */
   mux?: MusicMuxEntry[];
+  /** Music ducked under the source voice; present only when `ducking` ran. */
+  ducked?: MusicMediaEntry[];
   title?: MusicTitle;
   duration_seconds?: number;
 }
@@ -258,4 +274,29 @@ export interface WaitOptions {
   pollInterval?: number;
   /** Overall deadline in milliseconds. Default 600000. */
   timeout?: number;
+}
+
+/** Result of an async video-to-video task (`videoToVideoMusic`/`videoToVideoSfx`):
+ * a re-hosted video with generated music or SFX muxed in. */
+export interface VideoResult extends BaseTaskResult {
+  video?: SfxMedia;
+  duration_seconds?: number;
+}
+
+export interface VideoToVideoMusicParams {
+  video?: VideoInput;
+  videoUrl?: string;
+  prompt?: string;
+  /** Keep the source speech/vocals in the output. Both this and the legacy
+   * `isolateVocals` are accepted and OR'd server-side. */
+  preserveSpeech?: boolean;
+  /** @deprecated Legacy alias for `preserveSpeech`. */
+  isolateVocals?: boolean;
+}
+
+export interface VideoToVideoSfxParams {
+  video?: VideoInput;
+  videoUrl?: string;
+  prompt?: string;
+  segments?: SfxSegment[];
 }
