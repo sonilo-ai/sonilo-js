@@ -1,5 +1,12 @@
 # sonilo-video-kit
 
+## 1.0.0
+
+### Patch Changes
+
+- Updated dependencies [23b67f1]
+  - sonilo@0.4.0
+
 ## 0.2.0
 
 ### Minor Changes
