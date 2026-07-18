@@ -1,6 +1,6 @@
 {
   "name": "sonilo-video-kit",
-  "version": "1.0.0",
+  "version": "0.3.0",
   "description": "Video helpers for the Sonilo API: generate a soundtrack and mix it into your video with ffmpeg",
   "license": "MIT",
   "repository": {
