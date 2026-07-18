@@ -10,7 +10,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("videoToVideoMusic", () => {
   it("submits video_url + preserveSpeech and posts the alias too", async () => {
-    const fetch = vi.fn(async () => jsonResponse({ task_id: "t1", status: "processing" }));
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t1", status: "processing" }),
+    );
     const client = new SoniloClient({ apiKey: "k", fetch });
     const task = await client.videoToVideoMusic.submit({
       videoUrl: "https://x/v.mp4",
@@ -18,7 +20,7 @@ describe("videoToVideoMusic", () => {
       preserveSpeech: true,
     });
     expect(task).toEqual({ task_id: "t1", status: "processing" });
-    const [url, init] = fetch.mock.calls[0];
+    const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("https://api.sonilo.com/v1/video-to-video-music");
     const form = init!.body as FormData;
     expect(form.get("video_url")).toBe("https://x/v.mp4");

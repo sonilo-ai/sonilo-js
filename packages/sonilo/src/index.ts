@@ -43,8 +43,11 @@ export type {
   UsageResponse,
   UsageSummary,
   VideoInput,
+  VideoResult,
   VideoToMusicParams,
   VideoToSfxParams,
+  VideoToVideoMusicParams,
+  VideoToVideoSfxParams,
   WaitOptions,
 } from "./types.js";
 export { isAudioChunkEvent, isErrorEvent } from "./types.js";

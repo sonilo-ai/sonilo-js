@@ -102,7 +102,7 @@ describe("textToMusic.stream", () => {
 
 describe("textToMusic.submit", () => {
   it("posts async mode + output_format and returns the ack", async () => {
-    const fetch = vi.fn(async () =>
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ task_id: "tm1", status: "processing" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -115,9 +115,9 @@ describe("textToMusic.submit", () => {
       outputFormat: "wav",
     });
     expect(task).toEqual({ task_id: "tm1", status: "processing" });
-    const [url, init] = fetch.mock.calls[0];
+    const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("https://api.sonilo.com/v1/text-to-music");
-    const form = init.body;
+    const form = init!.body as FormData;
     expect(form.get("mode")).toBe("async");
     expect(form.get("output_format")).toBe("wav");
     expect(form.get("prompt")).toBe("lofi");

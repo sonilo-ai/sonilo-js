@@ -145,7 +145,7 @@ describe("videoToMusic.submit", () => {
   });
 
   it("forwards preserve_speech, output_format and ducking; defaults mode async", async () => {
-    const fetch = vi.fn(async () =>
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ task_id: "m1", status: "processing" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -158,7 +158,7 @@ describe("videoToMusic.submit", () => {
       outputFormat: "wav",
       ducking: false,
     });
-    const form = fetch.mock.calls[0][1].body;
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.get("mode")).toBe("async");
     expect(form.get("preserve_speech")).toBe("true");
     expect(form.get("output_format")).toBe("wav");
@@ -166,7 +166,7 @@ describe("videoToMusic.submit", () => {
   });
 
   it("omits ducking when unset so the backend default applies", async () => {
-    const fetch = vi.fn(async () =>
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ task_id: "m2", status: "processing" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -174,7 +174,7 @@ describe("videoToMusic.submit", () => {
     );
     const client = new SoniloClient({ apiKey: "k", fetch });
     await client.videoToMusic.submit({ videoUrl: "https://x/v.mp4" });
-    const form = fetch.mock.calls[0][1].body;
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.has("ducking")).toBe(false);
   });
 });

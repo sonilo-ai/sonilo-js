@@ -10,14 +10,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("videoToVideoSfx", () => {
   it("serializes segments and submits", async () => {
-    const fetch = vi.fn(async () => jsonResponse({ task_id: "s1", status: "processing" }));
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "s1", status: "processing" }),
+    );
     const client = new SoniloClient({ apiKey: "k", fetch });
     await client.videoToVideoSfx.submit({
       videoUrl: "https://x/v.mp4",
       segments: [{ start: 0, end: 2, prompt: "whoosh" }],
     });
-    const form = fetch.mock.calls[0][1]!.body as FormData;
-    expect(fetch.mock.calls[0][0]).toBe("https://api.sonilo.com/v1/video-to-video-sfx");
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(fetch.mock.calls[0]![0]).toBe("https://api.sonilo.com/v1/video-to-video-sfx");
     expect(JSON.parse(form.get("segments") as string)).toEqual([
       { start: 0, end: 2, prompt: "whoosh" },
     ]);
