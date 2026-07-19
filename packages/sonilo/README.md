@@ -62,6 +62,58 @@ await writeFile("mix.m4a", await download(result.audio[0]!));
 await writeFile("vocals.m4a", await download(result.vocals!));
 ```
 
+### Ducking, speech & output format (async video-to-music)
+
+The async `submit()` path also accepts:
+
+- `preserveSpeech` — keep the source speech/vocals in the result. This is the
+  current name for `isolateVocals`, which still works as an alias.
+- `ducking` — duck the generated music under the source voice. It is **on by
+  default** in async mode; pass `ducking: false` to opt out. When it runs, the
+  result gains a `ducked` array alongside `audio`.
+- `outputFormat` — `"m4a"` (default) or `"wav"` (requires async mode).
+
+```ts
+const task = await client.videoToMusic.submit({
+  video: "./my_video.mp4",
+  preserveSpeech: true,
+  outputFormat: "wav",
+  // ducking is on by default in async — set `false` to disable
+});
+const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
+if (result.ducked) {
+  await writeFile("ducked.wav", await download(result.ducked[0]!));
+}
+```
+
+## Video to video
+
+Generate a soundtrack or sound effects and get back a **re-hosted video** with
+the audio muxed in — not just an audio file. Both endpoints are async; poll to
+a `VideoResult`:
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+
+// Score music into the video (optionally keep the original speech)
+const music = await client.videoToVideoMusic.generate({
+  video: "./my_video.mp4", // Node path; File/Blob in the browser, or `videoUrl`
+  prompt: "cinematic orchestral swell",
+  preserveSpeech: true,
+});
+await writeFile("scored.mp4", await download(music.video!));
+
+// Sound effects for the video, optionally per time segment
+const sfx = await client.videoToVideoSfx.generate({
+  video: "./my_video.mp4",
+  segments: [{ start: 0, end: 2, prompt: "footsteps on gravel" }],
+});
+await writeFile("with_sfx.mp4", await download(sfx.video!));
+```
+
 ## Configuration
 
 ```ts
