@@ -55,12 +55,14 @@ const track = await sonilo.videoToMusic.generate({
 await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" });
 ```
 
-### Vocal isolation (async)
+### Preserve speech (async)
 
-Splitting out a vocals-only stem requires the async task API — the plain
-stream above doesn't support it. Submit with `isolateVocals: true` (this
-implies `mode: "async"` if you don't set `mode` yourself) and poll with
-`client.tasks.wait<MusicTaskResult>()`:
+Set `preserveSpeech: true` to keep the source speech/vocals in the result.
+This requires the async task API — the plain stream above doesn't support it —
+so it implies `mode: "async"` if you don't set `mode` yourself. Submit, then
+poll with `client.tasks.wait<MusicTaskResult>()`. The result carries the
+generated `audio` plus a separate speech stem (`vocals`) and a `mux` (the
+generated music mixed with the preserved speech):
 
 ```ts
 import { SoniloClient, download } from "sonilo";
@@ -71,12 +73,12 @@ const client = new SoniloClient();
 const task = await client.videoToMusic.submit({
   video: "./my_video.mp4",
   prompt: "upbeat, energetic",
-  isolateVocals: true,
+  preserveSpeech: true,
 });
 const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
 
-// `audio` is always an array for async video-to-music (one entry per
-// output stream); `vocals` and `mux` are only present with isolateVocals.
+// `audio` is always an array for async video-to-music (one entry per output
+// stream); `vocals` and `mux` are only present when preserveSpeech is set.
 await writeFile("mix.m4a", await download(result.audio[0]!));
 await writeFile("vocals.m4a", await download(result.vocals!));
 ```
@@ -85,8 +87,8 @@ await writeFile("vocals.m4a", await download(result.vocals!));
 
 The async `submit()` path also accepts:
 
-- `preserveSpeech` — keep the source speech/vocals in the result. This is the
-  current name for `isolateVocals`, which still works as an alias.
+- `preserveSpeech` — keep the source speech/vocals in the result (see
+  [Preserve speech](#preserve-speech-async) above).
 - `ducking` — duck the generated music under the source voice. It is **on by
   default** in async mode; pass `ducking: false` to opt out. When it runs, the
   result gains a `ducked` array alongside `audio`.
