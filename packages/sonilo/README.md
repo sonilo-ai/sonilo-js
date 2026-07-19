@@ -9,6 +9,25 @@ Works in Node.js ≥ 18 and modern browsers. Zero runtime dependencies.
 npm install sonilo
 ```
 
+## Authentication
+
+Create an API key in your [Sonilo dashboard](https://platform.sonilo.com/dashboard/api-keys),
+then give it to the client either as an environment variable (recommended) or
+inline:
+
+```bash
+export SONILO_API_KEY=sk_...
+```
+
+```ts
+const sonilo = new SoniloClient();                     // reads SONILO_API_KEY
+// or pass it directly:
+const sonilo = new SoniloClient({ apiKey: "sk_..." });
+```
+
+Keep your key secret — use it only server-side, never commit it, and prefer the
+environment variable over hardcoding it.
+
 ## Quickstart
 
 ```ts
