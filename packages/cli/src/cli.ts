@@ -1,5 +1,7 @@
+import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   APIError,
   SoniloClient,
@@ -447,9 +449,27 @@ async function main(): Promise<void> {
   }
 }
 
+/** True when this module is the process entrypoint, resolving symlinks on both
+ * sides so an npm-installed bin (always a symlink) is recognised. */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return pathToFileURL(realpathSync(entry)).href === pathToFileURL(realpathSync(fileURLToPath(import.meta.url))).href;
+  } catch {
+    return false;
+  }
+}
+
 // Only run when invoked directly (as the built bin), not when tests import
 // these functions to exercise them against a mocked SoniloClient.
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// realpath both sides before comparing: npm installs a bin as a SYMLINK
+// (node_modules/.bin/sonilo -> ../sonilo-cli/dist/cli.js), so argv[1] is the
+// link while import.meta.url is already resolved. Comparing them raw never
+// matched under a real install, and every command silently exited 0.
+// pathToFileURL, not `file://` + path, so paths with spaces still compare.
+if (isMainModule()) {
   main().catch((err: unknown) => {
     if (err instanceof APIError) {
       fail(`${err.message}${err.code ? ` (${err.code})` : ""}`);
