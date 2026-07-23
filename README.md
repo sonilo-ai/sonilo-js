@@ -6,6 +6,7 @@ This monorepo hosts the official Sonilo packages for JavaScript/TypeScript.
 | --- | --- | --- |
 | [`sonilo`](./packages/sonilo) | Official TypeScript/JavaScript client. Zero runtime dependencies, works in Node.js ≥ 18 and modern browsers. | `npm install sonilo` |
 | [`sonilo-video-kit`](./packages/sonilo-video-kit) | Node-only helpers to generate a soundtrack for a video and mix it in locally with ffmpeg. | `npm install sonilo sonilo-video-kit` |
+| [`sonilo-cli`](./packages/cli) | Command-line interface — generate music and sound effects from your terminal. | `npm install -g sonilo-cli` |
 
 ## Development
 

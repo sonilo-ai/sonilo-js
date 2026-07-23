@@ -1,0 +1,46 @@
+{
+  "name": "sonilo-cli",
+  "version": "0.1.0",
+  "description": "Command-line interface for the Sonilo API — generate music and sound effects without writing code",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sonilo-ai/sonilo-js.git",
+    "directory": "packages/cli"
+  },
+  "type": "module",
+  "bin": {
+    "sonilo": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "sonilo": "^0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsup": "^8.0.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  },
+  "keywords": [
+    "sonilo",
+    "cli",
+    "music",
+    "sound-effects",
+    "ai",
+    "text-to-music",
+    "video-to-music"
+  ]
+}

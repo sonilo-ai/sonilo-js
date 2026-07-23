@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w sonilo && npm run build -w sonilo-video-kit",
+    "build": "npm run build -w sonilo && npm run build -w sonilo-video-kit && npm run build -w sonilo-cli",
     "lint": "npm run build -w sonilo && npm run lint --workspaces --if-present",
     "test": "npm run build -w sonilo && npm run test --workspaces --if-present",
     "changeset": "changeset",
