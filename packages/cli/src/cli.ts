@@ -359,7 +359,7 @@ export async function runVideoToSound(client: SoniloClient, argv: string[]): Pro
   const result = await client.tasks.wait<SoundResult>(task.task_id);
   const url = result.output_url ?? result.sfx?.url ?? result.music?.url;
   if (!url) fail("task succeeded but returned no output");
-  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "m4a")));
+  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "wav")));
 }
 
 export async function runVideoToVideoSound(client: SoniloClient, argv: string[]): Promise<void> {

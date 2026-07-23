@@ -45,7 +45,7 @@ sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
 sonilo video-to-sfx --video clip.mp4 --output foley.wav
 
 # Generate a combined music + SFX track for a video (async only)
-sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prompt "footsteps, distant thunder" --output mix.m4a
+sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prompt "footsteps, distant thunder" --output mix.wav
 
 # Same, but muxed back into the video
 sonilo video-to-video-sound --video clip.mp4 --sfx-prompt "footsteps" --output scored.mp4
