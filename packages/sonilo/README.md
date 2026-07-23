@@ -135,6 +135,46 @@ const sfx = await client.videoToVideoSfx.generate({
 await writeFile("with_sfx.mp4", await download(sfx.video!));
 ```
 
+## Video to sound
+
+`videoToSound` and `videoToVideoSound` generate a music bed and sound effects
+for the same clip and return them mixed into a single soundtrack — one call,
+one charge, instead of chaining two requests. `videoToSound` returns the mixed
+audio; `videoToVideoSound` returns the source video with that audio muxed in.
+Both are async-only, and both accept the same options.
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+
+const result = await client.videoToSound.generate({
+  videoUrl: "https://example.com/clip.mp4",
+  musicPrompt: "uplifting orchestral score",
+  sfxPrompt: "match the on-screen action",
+});
+
+await writeFile("soundtrack.wav", await download(result.output_url));
+```
+
+The mixed result is `output_url` (`output_type` is `"audio"` here, `"video"`
+for `videoToVideoSound`). The individual stems come back alongside it, so you
+can re-balance the mix yourself:
+
+```ts
+await writeFile("music.m4a", await download(result.music));
+await writeFile("sfx.wav", await download(result.sfx));
+```
+
+`preserveSpeech: true` keeps the speech from the source video, and `ducking`
+(on by default) dips the music under it — pass `ducking: false` to opt out.
+`segments` takes the same `{ start, end, prompt }` list as `videoToSfx`.
+Input videos may be at most 180 seconds long.
+
+Use `submit()` instead of `generate()` to get a `task_id` back immediately and
+poll it yourself with `client.tasks.wait<SoundResult>(taskId)`.
+
 ## Configuration
 
 ```ts
@@ -215,6 +255,18 @@ const result = await client.tasks.wait(task.task_id, { pollInterval: 2000, timeo
 `.refunded`) on failure and `TaskTimeoutError` if the deadline passes — the
 task keeps running server-side and can still be polled afterwards. Result URLs
 are presigned and expire; download promptly or re-fetch via `tasks.get`.
+
+## Free trial
+
+Accounts created through self-serve signup start with free runs on every
+endpoint — no card required:
+
+| Free runs | Endpoints |
+| --- | --- |
+| 2 each | text-to-music, text-to-sfx, audio-ducking |
+| 1 each | video-to-music, video-to-sfx, video-to-video-music, video-to-video-sfx, video-to-sound, video-to-video-sound |
+
+Once an endpoint's free runs are used up, calls to it bill at the normal rate.
 
 ## Account
 

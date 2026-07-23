@@ -300,3 +300,40 @@ export interface VideoToVideoSfxParams {
   prompt?: string;
   segments?: SfxSegment[];
 }
+
+/** Params for `videoToSound` and `videoToVideoSound`. Both endpoints take the
+ * identical form, so they share one params type. */
+export interface VideoToSoundParams {
+  video?: VideoInput;
+  videoUrl?: string;
+  /** Style hint for the generated music bed. */
+  musicPrompt?: string;
+  /** Description of the sound effects layered over the music. */
+  sfxPrompt?: string;
+  /** Per-segment SFX descriptions; must start at 0 and be contiguous. */
+  segments?: SfxSegment[];
+  /** Keep the source speech in the result. */
+  preserveSpeech?: boolean;
+  /** Duck the generated music under the source speech. Default-ON
+   * server-side: leave unset to keep it on, pass `false` to opt out. */
+  ducking?: boolean;
+}
+
+/** Result of a `videoToSound` / `videoToVideoSound` task (`tasks.get`) or its
+ * final state (`generate`).
+ *
+ * The combined music+SFX result is `output_url` — a bare presigned URL rather
+ * than a media object, since these endpoints render one artifact whose kind is
+ * announced by `output_type` ("audio" for video-to-sound, "video" for
+ * video-to-video-sound). `music`, `music_processed` and `sfx` are the
+ * individual stems; pass any of them, or `output_url` itself, to `download()`. */
+export interface SoundResult extends BaseTaskResult {
+  output_url?: string;
+  output_type?: "audio" | "video";
+  output_bytes?: number;
+  music?: SfxMedia;
+  /** Present only when `preserveSpeech`/`ducking` altered the music bed. */
+  music_processed?: SfxMedia;
+  sfx?: SfxMedia;
+  duration_seconds?: number;
+}
