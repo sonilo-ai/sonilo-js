@@ -4,7 +4,6 @@ import {
   APIError,
   SoniloClient,
   SoniloError,
-  VERSION,
   download,
   type MusicTaskResult,
   type SfxResult,
@@ -12,6 +11,7 @@ import {
   type VideoToSoundParams,
   type WaitOptions,
 } from "sonilo";
+import { VERSION } from "./version.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
 
@@ -154,7 +154,9 @@ export function buildClient(apiKeyFlag: string | undefined): SoniloClient {
       "no API key — pass --api-key <key> or set the SONILO_API_KEY environment variable",
     );
   }
-  return new SoniloClient({ apiKey });
+  // Identify as the CLI, not the SDK it wraps, so CLI traffic stays
+  // separable from direct SDK use in server-side analytics.
+  return new SoniloClient({ apiKey, clientName: "cli-js", clientVersion: VERSION });
 }
 
 function printJson(value: unknown): void {

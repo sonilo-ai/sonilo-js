@@ -11,6 +11,7 @@ import {
 } from "./ducking-api.js";
 import { DuckingFailedError, VideoKitError } from "./errors.js";
 import { extractAudio, muxVideoWithAudio, probeMuxFeasibility, probeVideo } from "./ffmpeg.js";
+import { VERSION } from "./version.js";
 
 /** The ducking API rejects voice, video, and music tracks longer than this. */
 export const MAX_DUCKING_DURATION_SECONDS = 360;
@@ -251,7 +252,10 @@ export async function duckMusicUnderSpeech(
       );
     }
 
-    const client = options.client ?? new SoniloClient();
+    const client = options.client ??
+    // Only the kit's own default client is tagged; a caller-supplied client
+    // keeps whatever identity its owner gave it.
+    new SoniloClient({ clientName: "videokit-js", clientVersion: VERSION });
 
     // Upload the audio track, never the picture: a few MB instead of up to the
     // API's 300 MB upload cap, and the original picture is never re-encoded by

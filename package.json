@@ -12,7 +12,7 @@
     "lint": "npm run build -w sonilo && npm run lint --workspaces --if-present",
     "test": "npm run build -w sonilo && npm run test --workspaces --if-present",
     "changeset": "changeset",
-    "version": "changeset version",
+    "version": "changeset version && node scripts/sync-versions.mjs && npm install --package-lock-only",
     "release": "changeset publish"
   },
   "devDependencies": {
