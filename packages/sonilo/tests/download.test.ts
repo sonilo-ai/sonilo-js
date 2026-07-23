@@ -70,4 +70,23 @@ describe("download", () => {
       download({ url: "https://r2.example.com/a.m4a" }, neverResolvingFetch(), 5),
     ).rejects.toBeInstanceOf(RequestTimeoutError);
   });
+
+  it("accepts a bare URL string (the output_url of a video-to-sound task)", async () => {
+    let seenUrl = "";
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return new Response(new Uint8Array([7, 8]));
+    }) as typeof globalThis.fetch;
+
+    const bytes = await download("https://r2.example.com/sound.wav", fetchFn);
+    expect(Array.from(bytes)).toEqual([7, 8]);
+    expect(seenUrl).toBe("https://r2.example.com/sound.wav");
+  });
+
+  it("rejects with SoniloError on an empty URL string", async () => {
+    const fetchFn = (async () => {
+      throw new Error("should not be called");
+    }) as typeof globalThis.fetch;
+    await expect(download("", fetchFn)).rejects.toBeInstanceOf(SoniloError);
+  });
 });
