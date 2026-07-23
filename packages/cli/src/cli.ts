@@ -8,6 +8,8 @@ import {
   download,
   type MusicTaskResult,
   type SfxResult,
+  type SoundResult,
+  type VideoToSoundParams,
   type WaitOptions,
 } from "sonilo";
 
@@ -23,6 +25,8 @@ Commands:
   video-to-music                Generate music matched to a video
   text-to-sfx                   Generate a sound effect from a text prompt
   video-to-sfx                  Generate a sound effect matched to a video
+  video-to-sound                Generate a combined music + SFX track for a video
+  video-to-video-sound          Same as video-to-sound, muxed back into the video
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
                                 (--poll-interval <ms>, --timeout <ms>)
@@ -57,6 +61,15 @@ video-to-sfx options:
   --output <path>         Where to save the audio (default: ./output.<ext>)
   --format <wav|mp3|aac|flac>   Output format. Default: wav
 
+video-to-sound / video-to-video-sound options (both async-only):
+  --video <path>         Required (or --video-url). Local file to score.
+  --video-url <url>      Required (or --video). Remote video to score.
+  --music-prompt <text>   Optional style hint for the music bed.
+  --sfx-prompt <text>     Optional description of the sound effects.
+  --preserve-speech       Keep the source speech in the result.
+  --no-ducking            Disable ducking (music is ducked under speech by default).
+  --output <path>         Where to save the result (default: ./output.<ext>)
+
 Global options:
   --api-key <key>   Overrides the SONILO_API_KEY environment variable.
   --help             Show this help and exit.
@@ -86,6 +99,47 @@ function requireFlag(value: string | undefined, name: string): string {
 
 export function outputPath(explicit: string | undefined, ext: string): string {
   return explicit ?? `output.${ext}`;
+}
+
+/** Normalize and validate a --format value against the allowed set. Case is
+ * folded so `--format WAV` behaves like `--format wav`, and unsupported values
+ * fail loudly instead of silently falling through to a mislabeled file. */
+export function parseFormat<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  if (value === undefined) return fallback;
+  const normalized = value.toLowerCase();
+  if (!(allowed as readonly string[]).includes(normalized)) {
+    fail(`invalid --format "${value}". Allowed: ${allowed.join(", ")}`);
+  }
+  return normalized as T;
+}
+
+/** Pull `--api-key <value>` out of the arguments from any position and return
+ * the remaining tokens, so it works whether it comes before or after the
+ * command. */
+export function extractApiKey(argv: string[]): {
+  apiKeyFlag: string | undefined;
+  rest: string[];
+} {
+  const i = argv.indexOf("--api-key");
+  if (i < 0) return { apiKeyFlag: undefined, rest: argv };
+  return { apiKeyFlag: argv[i + 1], rest: argv.slice(0, i).concat(argv.slice(i + 2)) };
+}
+
+/** Best-effort file extension from a (presigned) result URL, ignoring query
+ * strings, falling back when the path carries no extension. */
+export function extFromUrl(url: string, fallback: string): string {
+  try {
+    const path = new URL(url).pathname;
+    const dot = path.lastIndexOf(".");
+    if (dot >= 0 && dot < path.length - 1) return path.slice(dot + 1);
+  } catch {
+    // not a parseable URL — fall through to the fallback
+  }
+  return fallback;
 }
 
 async function writeAudio(bytes: Uint8Array, path: string): Promise<void> {
@@ -143,7 +197,7 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
-  const format = (values.format as "m4a" | "wav" | undefined) ?? "m4a";
+  const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
   const useAsync = values.async === true || format === "wav";
 
   if (!useAsync) {
@@ -181,7 +235,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
-  const format = (values.format as "m4a" | "wav" | undefined) ?? "m4a";
+  const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
   const isolateVocals = values["isolate-vocals"] === true;
   const preserveSpeech = values["preserve-speech"] === true;
   const useAsync =
@@ -224,12 +278,7 @@ export async function runTextToSfx(client: SoniloClient, argv: string[]): Promis
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
-  const format = (values.format as
-    | "wav"
-    | "mp3"
-    | "aac"
-    | "flac"
-    | undefined) ?? "wav";
+  const format = parseFormat(values.format, ["wav", "mp3", "aac", "flac"] as const, "wav");
   const result = await client.textToSfx.generate({
     prompt,
     duration,
@@ -254,12 +303,7 @@ export async function runVideoToSfx(client: SoniloClient, argv: string[]): Promi
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
-  const format = (values.format as
-    | "wav"
-    | "mp3"
-    | "aac"
-    | "flac"
-    | undefined) ?? "wav";
+  const format = parseFormat(values.format, ["wav", "mp3", "aac", "flac"] as const, "wav");
   const task = await client.videoToSfx.submit({
     video: values.video,
     videoUrl: values["video-url"],
@@ -273,6 +317,61 @@ export async function runVideoToSfx(client: SoniloClient, argv: string[]): Promi
   await writeAudio(await download(media), outputPath(values.output, format));
 }
 
+/** Shared flag parsing for the two combined music + SFX endpoints, which take
+ * identical form fields. `ducking` is default-ON server-side, so it is only
+ * sent when the user explicitly opts out with --no-ducking. */
+function parseSoundArgs(argv: string[]): {
+  params: VideoToSoundParams;
+  output: string | undefined;
+} {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      "music-prompt": { type: "string" },
+      "sfx-prompt": { type: "string" },
+      "preserve-speech": { type: "boolean" },
+      "no-ducking": { type: "boolean" },
+      output: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  return {
+    params: {
+      video: values.video,
+      videoUrl: values["video-url"],
+      musicPrompt: values["music-prompt"],
+      sfxPrompt: values["sfx-prompt"],
+      preserveSpeech: values["preserve-speech"] === true ? true : undefined,
+      ducking: values["no-ducking"] === true ? false : undefined,
+    },
+    output: values.output,
+  };
+}
+
+export async function runVideoToSound(client: SoniloClient, argv: string[]): Promise<void> {
+  const { params, output } = parseSoundArgs(argv);
+  const task = await client.videoToSound.submit(params);
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<SoundResult>(task.task_id);
+  const url = result.output_url ?? result.sfx?.url ?? result.music?.url;
+  if (!url) fail("task succeeded but returned no output");
+  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "m4a")));
+}
+
+export async function runVideoToVideoSound(client: SoniloClient, argv: string[]): Promise<void> {
+  const { params, output } = parseSoundArgs(argv);
+  const task = await client.videoToVideoSound.submit(params);
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<SoundResult>(task.task_id);
+  const url = result.output_url;
+  if (!url) fail("task succeeded but returned no output video");
+  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version")) {
@@ -284,13 +383,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const [command, ...rest] = argv;
-  // --api-key is accepted anywhere in the argument list, not just before the
-  // command, since users naturally reach for it last.
-  const apiKeyIndex = rest.indexOf("--api-key");
-  const apiKeyFlag = apiKeyIndex >= 0 ? rest[apiKeyIndex + 1] : undefined;
-  const commandArgs =
-    apiKeyIndex >= 0 ? rest.slice(0, apiKeyIndex).concat(rest.slice(apiKeyIndex + 2)) : rest;
+  // --api-key is accepted anywhere in the argument list, not just after the
+  // command, since users naturally reach for it last. Strip it (and its value)
+  // before reading the command so it never gets mistaken for one.
+  const { apiKeyFlag, rest } = extractApiKey(argv);
+  const [command, ...commandArgs] = rest;
   const KNOWN_COMMANDS = new Set([
     "account",
     "usage",
@@ -298,6 +395,8 @@ async function main(): Promise<void> {
     "video-to-music",
     "text-to-sfx",
     "video-to-sfx",
+    "video-to-sound",
+    "video-to-video-sound",
     "tasks",
   ]);
   if (!KNOWN_COMMANDS.has(command ?? "")) {
@@ -320,6 +419,10 @@ async function main(): Promise<void> {
       return runTextToSfx(client, commandArgs);
     case "video-to-sfx":
       return runVideoToSfx(client, commandArgs);
+    case "video-to-sound":
+      return runVideoToSound(client, commandArgs);
+    case "video-to-video-sound":
+      return runVideoToVideoSound(client, commandArgs);
     case "tasks": {
       const [subcommand, taskId, ...taskArgs] = commandArgs;
       if (subcommand === "get") return runTasksGet(client, taskId);

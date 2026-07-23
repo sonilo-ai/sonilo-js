@@ -44,14 +44,21 @@ sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
 # Generate a sound effect matched to a video
 sonilo video-to-sfx --video clip.mp4 --output foley.wav
 
+# Generate a combined music + SFX track for a video (async only)
+sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prompt "footsteps, distant thunder" --output mix.m4a
+
+# Same, but muxed back into the video
+sonilo video-to-video-sound --video clip.mp4 --sfx-prompt "footsteps" --output scored.mp4
+
 # Check an async task
 sonilo tasks get <task-id>
 sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 ```
 
 Run `sonilo --help` for the full option list, including `--isolate-vocals` /
-`--preserve-speech` for `video-to-music`, and the `--format` options each
-command accepts.
+`--preserve-speech` for `video-to-music`, `--music-prompt` / `--sfx-prompt` /
+`--no-ducking` for the `video-to-sound` commands, and the `--format` options
+each command accepts.
 
 `--format wav` (or `--isolate-vocals` / `--preserve-speech`) submits an async
 task and polls it instead of streaming the response — matching how the
