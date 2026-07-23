@@ -1,6 +1,6 @@
 {
   "name": "sonilo-video-kit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Video helpers for the Sonilo API: generate a soundtrack and mix it into your video with ffmpeg",
   "license": "MIT",
   "repository": {
@@ -38,11 +38,11 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "sonilo": "^0.4.0"
+    "sonilo": "^0.5.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
-    "sonilo": "^0.4.0",
+    "sonilo": "^0.5.0",
     "tsup": "^8.0.2",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
