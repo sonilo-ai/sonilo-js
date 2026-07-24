@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
 import {
+  DUBBING_WAIT_TIMEOUT_MS,
   extFromUrl,
   extractApiKey,
+  formatTrialSummary,
+  languageOutputPath,
   outputPath,
+  parseDubbingArgs,
   parseFormat,
   runAccount,
+  runDubbing,
   runTasksGet,
   runTasksWait,
   runUsage,
@@ -156,6 +161,160 @@ describe("runVideoToVideoSound", () => {
   });
 });
 
+describe("languageOutputPath", () => {
+  it("inserts the language before the extension", () => {
+    expect(languageOutputPath("out/clip.mp4", "es")).toBe("out/clip.es.mp4");
+    expect(languageOutputPath("output.mp4", "zh_cn")).toBe("output.zh_cn.mp4");
+  });
+
+  it("appends .<lang>.mp4 when the template has no extension", () => {
+    expect(languageOutputPath("clip", "fr")).toBe("clip.fr.mp4");
+  });
+
+  it("does not mistake a dot in a directory name for an extension", () => {
+    expect(languageOutputPath("v1.2/clip", "de")).toBe("v1.2/clip.de.mp4");
+  });
+});
+
+describe("parseDubbingArgs", () => {
+  it("splits --languages on commas and trims", () => {
+    const { params } = parseDubbingArgs([
+      "--video-url",
+      "https://x/v.mp4",
+      "--languages",
+      "es, fr ,de",
+    ]);
+    expect(params.languages).toEqual(["es", "fr", "de"]);
+    expect(params.videoUrl).toBe("https://x/v.mp4");
+  });
+
+  it("leaves languages undefined when the flag is absent", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.languages).toBeUndefined();
+  });
+
+  it("parses --timeout as a number", () => {
+    const { timeout } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--timeout", "5000"]);
+    expect(timeout).toBe(5000);
+  });
+
+  it("leaves timeout undefined when the flag is absent", () => {
+    const { timeout } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(timeout).toBeUndefined();
+  });
+});
+
+describe("runDubbing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes one file per language, named from the --output template", async () => {
+    // `json()` from ./helpers.js takes no status argument, and `download()`
+    // defaults to globalThis.fetch rather than the client's injected fetch —
+    // so the result URLs are served by a spy on globalThis.fetch, exactly as
+    // the runVideoToSound test above does.
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/dubbing")
+        ? json({ task_id: "db1", status: "processing" })
+        : json({
+            task_id: "db1",
+            status: "succeeded",
+            outputs: {
+              es: "https://cdn.example.com/es.mp4",
+              fr: "https://cdn.example.com/fr.mp4",
+            },
+          }),
+    );
+    // A fresh Response per call: runDubbing downloads once per language, and
+    // a Response body can only be read once, so reusing a single instance
+    // (mockResolvedValue) would throw "Body has already been read" on the
+    // second download.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    // `vi.restoreAllMocks()` in afterEach does not reset a vi.mock-factory
+    // vi.fn like `writeFile` — its call history accumulates across tests in
+    // this file, so clear it here or `toContain` below could pass even if
+    // the function wrote extra, unwanted files.
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--languages",
+      "es,fr",
+      "--output",
+      "out/clip.mp4",
+    ]);
+
+    expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/dubbing");
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toHaveLength(2);
+    expect(written).toContain("out/clip.es.mp4");
+    expect(written).toContain("out/clip.fr.mp4");
+  });
+
+  it("exits when neither --video nor --video-url is given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(runDubbing(client, ["--languages", "es"])).rejects.toThrow("process.exit");
+  });
+
+  it("waits with the dubbing-specific default timeout when --timeout is not given", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing") ? json({ task_id: "db2", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "db2",
+      status: "succeeded",
+      outputs: { es: "https://cdn.example.com/es.mp4" },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+
+    expect(waitSpy).toHaveBeenCalledWith("db2", { timeout: DUBBING_WAIT_TIMEOUT_MS });
+  });
+
+  it("parses --timeout and forwards it to tasks.wait, overriding the default", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing") ? json({ task_id: "db3", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "db3",
+      status: "succeeded",
+      outputs: { es: "https://cdn.example.com/es.mp4" },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--timeout",
+      "5000",
+    ]);
+
+    expect(waitSpy).toHaveBeenCalledWith("db3", { timeout: 5000 });
+  });
+});
+
 describe("runAccount", () => {
   it("fetches /v1/account/services and prints the JSON body", async () => {
     const services = {
@@ -173,6 +332,65 @@ describe("runAccount", () => {
     expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/account/services");
     expect(logSpy).toHaveBeenCalledWith(JSON.stringify(services, null, 2));
     logSpy.mockRestore();
+  });
+
+  it("prints the free-trial summary on stderr, leaving stdout pure JSON", async () => {
+    const services = {
+      available_services: ["text_to_music", "video_to_music"],
+      rpm_limit: 60,
+      concurrency_limit: 5,
+      discount_factor: 1,
+      max_upload_size_mb: 300,
+      trial: {
+        text_to_music: { granted: 2, used: 1, remaining: 1 },
+        video_to_music: { granted: 1, used: 1, remaining: 0 },
+      },
+    };
+    const { client } = mockClient(() => json(services));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runAccount(client);
+
+    expect(logSpy).toHaveBeenCalledWith(JSON.stringify(services, null, 2));
+    expect(errSpy).toHaveBeenCalledWith(
+      "Free trial: text-to-music 1/2 left, video-to-music 0/1 left",
+    );
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it("prints no summary when the account has no trial field", async () => {
+    const { client } = mockClient(() =>
+      json({
+        available_services: ["text_to_music"],
+        rpm_limit: 60,
+        concurrency_limit: 5,
+        discount_factor: 1,
+        max_upload_size_mb: 300,
+      }),
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runAccount(client);
+
+    expect(errSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+});
+
+describe("formatTrialSummary", () => {
+  it("returns undefined for an absent or empty allowance", () => {
+    expect(formatTrialSummary(undefined)).toBeUndefined();
+    expect(formatTrialSummary({})).toBeUndefined();
+  });
+
+  it("spells service keys the way the endpoints do", () => {
+    expect(
+      formatTrialSummary({ video_to_video_sound: { granted: 1, used: 0, remaining: 1 } }),
+    ).toBe("Free trial: video-to-video-sound 1/1 left");
   });
 });
 

@@ -10,6 +10,7 @@ export {
   SoniloError,
   TaskFailedError,
   TaskTimeoutError,
+  TrialExhaustedError,
 } from "./errors.js";
 export { download } from "./download.js";
 export { VERSION } from "./version.js";
@@ -21,6 +22,9 @@ export type {
   CostEvent,
   CostInfo,
   DailyUsage,
+  DubbingLanguage,
+  DubbingParams,
+  DubbingResult,
   ErrorEvent,
   MusicMediaEntry,
   MusicMuxEntry,

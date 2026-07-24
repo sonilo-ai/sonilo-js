@@ -7,6 +7,7 @@ import {
   PaymentRequiredError,
   RateLimitError,
   SoniloError,
+  TrialExhaustedError,
   errorFromResponse,
 } from "../src/errors.js";
 
@@ -52,7 +53,35 @@ describe("errorFromResponse", () => {
       jsonResponse(402, { code: "payment_required", message: "Insufficient balance" }),
     );
     expect(err).toBeInstanceOf(PaymentRequiredError);
+    expect(err).not.toBeInstanceOf(TrialExhaustedError);
     expect(err.message).toContain("Insufficient balance");
+  });
+
+  it("maps a 402 carrying trial_exhausted to TrialExhaustedError", async () => {
+    const err = await errorFromResponse(
+      jsonResponse(402, {
+        code: "trial_exhausted",
+        message:
+          "You've used your 2 free trial calls for text-to-music. Add a payment method to continue: https://platform.sonilo.com/dashboard/billing",
+      }),
+    );
+    expect(err).toBeInstanceOf(TrialExhaustedError);
+    expect(err.code).toBe("trial_exhausted");
+    // Still a PaymentRequiredError, so callers that catch every 402 keep working.
+    expect(err).toBeInstanceOf(PaymentRequiredError);
+    expect(err.message).toContain("free trial calls for text-to-music");
+  });
+
+  it("keeps a 402 with an insufficient_balance code out of TrialExhaustedError", async () => {
+    const err = await errorFromResponse(
+      jsonResponse(402, {
+        code: "insufficient_balance",
+        message: "Insufficient balance: need 0.4320, have 0.1000",
+      }),
+    );
+    expect(err).toBeInstanceOf(PaymentRequiredError);
+    expect(err).not.toBeInstanceOf(TrialExhaustedError);
+    expect(err.code).toBe("insufficient_balance");
   });
 
   it("maps 404 to APIError exposing the API's code", async () => {

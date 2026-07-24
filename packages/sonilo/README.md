@@ -175,6 +175,57 @@ Input videos may be at most 180 seconds long.
 Use `submit()` instead of `generate()` to get a `task_id` back immediately and
 poll it yourself with `client.tasks.wait<SoundResult>(taskId)`.
 
+## Dubbing
+
+`client.dubbing.submit()` / `.generate()` dub a video into one or more target
+languages in a single async call — one call, one task, one dubbed video per
+language.
+
+```ts
+import { SoniloClient } from "sonilo";
+import type { DubbingResult } from "sonilo";
+
+const client = new SoniloClient();
+
+const task = await client.dubbing.submit({
+  videoUrl: "https://example.com/clip.mp4",
+  languages: ["es", "fr"],
+});
+const result = await client.tasks.wait<DubbingResult>(task.task_id);
+for (const [language, url] of Object.entries(result.outputs ?? {})) {
+  console.log(language, url);
+}
+```
+
+`generate()` wraps submit + poll, same as the other async endpoints, and
+accepts a `{ timeout }` option to override the default 10-minute wait. The
+dubbing pipeline can take much longer than that, especially with several
+languages in one call, so pass a longer timeout for anything but the shortest
+clips. 7,200,000 ms matches the backend's own ceiling for a dubbing job and is
+what the CLI defaults to. For long jobs you can also use `submit()` plus your
+own `client.tasks.wait()`, as above:
+
+```ts
+const result = await client.dubbing.generate(
+  { videoUrl: "https://example.com/clip.mp4", languages: ["es", "fr"] },
+  { timeout: 7_200_000 }, // 2 hours, the backend's own ceiling
+);
+```
+
+Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
+the dubbing pipeline fetches the source itself and rejects plain http). The
+optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
+codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`.
+
+Dubbing is async-only, and the source video may be at most 180 seconds long.
+You are billed per language. Dubbing has **no free trial allowance** — unlike
+every other endpoint, every call bills from the first one (see
+[Free trial](#free-trial)).
+
+The result is a `DubbingResult`, whose `outputs` is a map of language code to
+dubbed `.mp4` URL — not the `audio`/`video`/`output_url` shape the other
+endpoints use.
+
 ## Configuration
 
 ```ts
@@ -258,15 +309,25 @@ are presigned and expire; download promptly or re-fetch via `tasks.get`.
 
 ## Free trial
 
-Accounts created through self-serve signup start with free runs on every
-endpoint — no card required:
+Accounts created through self-serve signup start with free runs on most
+endpoints — no card required:
 
 | Free runs | Endpoints |
 | --- | --- |
 | 2 each | text-to-music, text-to-sfx, audio-ducking |
 | 1 each | video-to-music, video-to-sfx, video-to-video-music, video-to-video-sfx, video-to-sound, video-to-video-sound |
+| 0 | dubbing |
 
 Once an endpoint's free runs are used up, calls to it bill at the normal rate.
+**Dubbing has no free trial allowance at all** — it bills every call from the
+first one. This is deliberate: dubbing charges `video_duration ×
+number_of_languages`, so a single "free" run could easily cost more than the
+free allowance on every other endpoint combined.
+
+The table above is the current default. Read the live numbers from
+`account.services()` rather than hard-coding them — see
+[Account](#account) below, and [Errors](#errors) for what a spent trial
+looks like at the call site.
 
 ## Account
 
@@ -275,10 +336,27 @@ const services = await sonilo.account.services();
 const usage = await sonilo.account.usage({ days: 7 });
 ```
 
+`services.trial` reports the free-trial allowance per service, so an
+integration can degrade gracefully *before* a call fails:
+
+```ts
+const { trial } = await sonilo.account.services();
+const quota = trial?.text_to_music;
+if (quota && quota.remaining === 0) {
+  // Prompt for a payment method instead of firing a call that will 402.
+  console.log(`Free trial spent (${quota.used}/${quota.granted}).`);
+}
+```
+
+`trial` is present only for self-serve accounts, so always treat it as
+optional; a service missing from the map has no trial allowance rather than
+an unlimited one.
+
 ## Errors
 
 All errors extend `SoniloError`: `AuthenticationError` (401),
-`PaymentRequiredError` (402), `RateLimitError` (429, `.retryAfter`),
+`PaymentRequiredError` (402), `TrialExhaustedError` (402, a subclass of
+`PaymentRequiredError`), `RateLimitError` (429, `.retryAfter`),
 `BadRequestError` (400/413/422, `.detail`), `APIError` (anything else),
 `GenerationError` for failures mid-stream, `TaskFailedError` (`.code`,
 `.taskId`, `.refunded`) for a failed SFX task, `TaskTimeoutError`
@@ -292,3 +370,29 @@ Every `APIError` also carries `.status`, `.body` (the parsed response),
 `.code` (the API's error code, e.g. `"rate_limit_exceeded"`), and `.errors`
 (the validation detail array on a 422), in addition to any subclass-specific
 properties above.
+
+### The three 402s
+
+A `402` is not one condition. Branch on the class (or equivalently on
+`.code`), never on the message text:
+
+```ts
+try {
+  await sonilo.textToMusic.generate({ prompt: "lofi", duration: 30 });
+} catch (err) {
+  if (err instanceof TrialExhaustedError) {
+    // code: "trial_exhausted" — the free trial for this service is spent and
+    // the account has never been funded. Prompt for a payment method; a retry
+    // can never succeed.
+  } else if (err instanceof PaymentRequiredError) {
+    // code: "insufficient_balance" — a funded wallet ran dry. Add balance and
+    // retry the same request.
+    // code: "payment_required" — anything else, e.g. a suspended account.
+  }
+}
+```
+
+`TrialExhaustedError` extends `PaymentRequiredError`, so an existing
+`catch (err) { if (err instanceof PaymentRequiredError) ... }` keeps
+catching every 402 — order the checks most-specific-first if you want to
+tell them apart.

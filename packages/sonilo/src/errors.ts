@@ -27,6 +27,14 @@ export class AuthenticationError extends APIError {}
 
 export class PaymentRequiredError extends APIError {}
 
+/** The account's free trial for this service is spent and it has never been
+ * funded — the caller should add a payment method rather than retry. A
+ * subclass of `PaymentRequiredError`, so code that already catches every 402
+ * keeps working; catch this first to tell "you haven't paid us yet" apart
+ * from a funded wallet that ran dry (`PaymentRequiredError` with
+ * `code === "insufficient_balance"`). */
+export class TrialExhaustedError extends PaymentRequiredError {}
+
 export class BadRequestError extends APIError {
   get detail(): string | undefined {
     const body = this.body as { message?: unknown; detail?: unknown } | undefined;
@@ -130,8 +138,15 @@ export async function errorFromResponse(res: Response): Promise<APIError> {
   switch (res.status) {
     case 401:
       return new AuthenticationError(message, res.status, body);
-    case 402:
+    case 402: {
+      // Branch on the API's `code`, never on the message text — the wording
+      // is product copy and changes; the code is the contract.
+      const code = (body as { code?: unknown } | undefined)?.code;
+      if (code === "trial_exhausted") {
+        return new TrialExhaustedError(message, res.status, body);
+      }
       return new PaymentRequiredError(message, res.status, body);
+    }
     case 429: {
       const ra = res.headers.get("retry-after");
       const retryAfter = ra !== null && ra !== "" && !Number.isNaN(Number(ra)) ? Number(ra) : undefined;
