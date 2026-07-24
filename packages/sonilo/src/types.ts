@@ -129,12 +129,21 @@ export interface VideoToMusicParams {
   ducking?: boolean;
 }
 
+export interface TrialQuota {
+  granted: number;
+  used: number;
+  remaining: number;
+}
+
 export interface AccountServices {
   available_services: string[];
   rpm_limit: number;
   concurrency_limit: number;
   discount_factor: number | string;
   max_upload_size_mb: number | null;
+  /** Free-trial allowance keyed by service. Returned only for self-serve
+   * accounts; absent entirely for invoiced accounts. */
+  trial?: Record<string, TrialQuota>;
 }
 
 export interface UsageSummary {
