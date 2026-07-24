@@ -1,17 +1,31 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/sonilo-ai/sonilo-js",
+  "public_key": "pk_h4BOrwVwv5CF9NJ5BIwvC",
   "projectTitle": "Sonilo",
   "description": "Official TypeScript/JavaScript client and CLI for the Sonilo API — generate music and sound effects from text or video.",
-  "excludeFolders": ["**/dist/**", "**/node_modules/**", ".changeset"],
-  "excludeFiles": ["package-lock.json", "CHANGELOG.md"],
+  "excludeFolders": [
+    "**/dist/**",
+    "**/node_modules/**",
+    ".changeset"
+  ],
+  "excludeFiles": [
+    "package-lock.json",
+    "CHANGELOG.md"
+  ],
   "rules": [
-    "Read the API key from the SONILO_API_KEY environment variable by default; only pass { apiKey } explicitly when the caller has a reason to override it.",
-    "For text-to-music and video-to-music: use client.textToMusic.generate() / client.videoToMusic.generate() (streaming) for short synchronous tracks. Use submit() + client.tasks.wait() (async mode) whenever the caller needs outputFormat: \"wav\", isolateVocals, preserveSpeech, or ducking — the streaming path does not support these.",
-    "For text-to-sfx and video-to-sfx, generation is always async: submit() returns a task_id, and generate() (or tasks.wait()) polls it to completion. There is no streaming variant for these two endpoints.",
-    "video-to-sound (client.videoToSound) and video-to-video-sound (client.videoToVideoSound) generate a combined music + SFX track and are async only. They share the same params (musicPrompt, sfxPrompt, segments, preserveSpeech, ducking); video-to-sound returns the mixed audio and video-to-video-sound returns a re-hosted video with the track muxed in. The final file is result.output_url (output_type tells you audio vs video).",
-    "ducking is default-ON server-side for the video-to-sound endpoints: leave it unset to keep it on and pass ducking: false only to opt out — never send an explicit false just to mean \"default\".",
-    "Result media (audio.url, or output_url for the combined sound endpoints) is a short-lived presigned URL, not the API's own domain — download it directly with the SDK's download() helper or fetch(); do not send the Authorization header to it.",
-    "Wrap calls in try/catch for AuthenticationError (401), PaymentRequiredError (402), RateLimitError (429, has retryAfter), and TaskFailedError (task reached status: \"failed\") rather than a single generic error branch — callers usually want to handle these differently.",
-    "video/videoUrl parameters accept exactly one of the two, never both and never neither — check for that before constructing a request."
+    "Read the API key from the SONILO_API_KEY environment variable by default; pass { apiKey } explicitly only when the caller has a reason to override it.",
+    "text-to-music and video-to-music: use client.textToMusic.generate() / client.videoToMusic.generate() (streaming) for short synchronous tracks. The streaming path does NOT support outputFormat \"wav\", isolateVocals, preserveSpeech or ducking.",
+    "For those options use submit() + client.tasks.wait() (async mode). isolateVocals/preserveSpeech/ducking apply to video-to-music only; text-to-music takes outputFormat alone.",
+    "text-to-sfx and video-to-sfx are always async: submit() returns a task_id and generate() (or tasks.wait()) polls it to completion. Neither has a streaming variant.",
+    "client.videoToSound and client.videoToVideoSound score one clip with a music bed AND sound effects in a single call — prefer them over chaining video-to-music with video-to-sfx, which is charged twice.",
+    "Both sound endpoints are async-only and share params: musicPrompt, sfxPrompt (NOT a single prompt), segments, preserveSpeech, ducking. videoToSound returns mixed audio; videoToVideoSound returns the video with that track muxed in.",
+    "A SoundResult's combined render is result.output_url (output_type says \"audio\" or \"video\"). music, music_processed and sfx are the individual stems; music_processed appears only when preserveSpeech or ducking altered the music bed.",
+    "ducking is default-ON server-side for the sound endpoints: leave it unset to keep it on, and pass ducking: false only to opt out. Never send an explicit false just to mean \"default\" — that disables it.",
+    "Result media (audio.url, or output_url for the sound endpoints) is a short-lived presigned URL on a different host, not the API's own domain. Download it with the SDK's download() helper or fetch().",
+    "Never send the Authorization header to a presigned result URL.",
+    "Catch AuthenticationError (401), PaymentRequiredError (402), RateLimitError (429, has retryAfter) and TaskFailedError (status \"failed\") separately rather than one generic branch — callers usually handle these differently.",
+    "video / videoUrl accept exactly one of the two, never both and never neither — validate before constructing a request.",
+    "Self-serve accounts start with free runs per endpoint (2 each for text-to-music, text-to-sfx, audio-ducking; 1 each for the video endpoints), then bill normally. A first call succeeding is not evidence that billing is set up."
   ]
 }
