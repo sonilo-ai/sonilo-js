@@ -38,6 +38,10 @@ sonilo text-to-music --prompt "warm lo-fi piano, rain in the background" --durat
 # Generate music matched to a video
 sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
 
+# Generate music with per-segment prompts
+sonilo text-to-music --duration 60 --async \
+  --segments '[{"start":0,"prompt":"airy pads","label":"intro"},{"start":15,"prompt":"driving beat","label":"chorus"}]'
+
 # Generate a sound effect from a text prompt
 sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
 
@@ -62,6 +66,36 @@ Run `sonilo --help` for the full option list, including `--isolate-vocals` /
 `--preserve-speech` for `video-to-music`, `--music-prompt` / `--sfx-prompt` /
 `--no-ducking` for the `video-to-sound` commands, `--languages` / `--timeout`
 for `dubbing`, and the `--format` options each command accepts.
+
+## Segments
+
+`text-to-music`, `video-to-music`, `video-to-sfx`, `video-to-sound` and
+`video-to-video-sound` accept `--segments`, a JSON array of per-segment
+prompts, in three forms — the curl / gh / aws convention:
+
+```bash
+--segments '[{"start":0,"prompt":"airy pads","label":"intro"}]'   # inline JSON
+--segments @segments.json                                          # read from a file
+--segments @-                                                      # read from stdin
+```
+
+A value starting with `@` names a source to read from (`@-` means stdin);
+anything else is parsed as JSON directly. The required fields differ by
+command:
+
+- `text-to-music` / `video-to-music` take `{start, prompt, label?}`.
+- `video-to-sfx` / `video-to-sound` / `video-to-video-sound` take
+  `{start, end, prompt}`.
+
+The CLI only checks this shape — that the value is valid JSON, a non-empty
+array of objects, and each object carries the right fields with the right
+types. It does not replicate the API's own rules (the first segment starting
+at 0, minimum spacing between segments, the `label` enum, segment-count
+limits): those are enforced server-side and returned as a `422` if violated.
+If a command is given segments shaped for the other kind (e.g. SFX-shaped
+`{start, end, prompt}` passed to `video-to-music`), the CLI rejects it
+immediately and names the shape it expected, since that mismatch is a common
+copy-paste mistake.
 
 `dubbing` differs from the other commands in three ways worth knowing before
 you run it:
