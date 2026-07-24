@@ -175,6 +175,34 @@ Input videos may be at most 180 seconds long.
 Use `submit()` instead of `generate()` to get a `task_id` back immediately and
 poll it yourself with `client.tasks.wait<SoundResult>(taskId)`.
 
+## Dubbing
+
+`client.dubbing.submit()` / `.generate()` dub a video into one or more target
+languages in a single async call — one call, one task, one dubbed video per
+language.
+
+```ts
+const result = await client.dubbing.generate({
+  videoUrl: "https://example.com/clip.mp4",
+  languages: ["es", "fr"],
+});
+for (const [language, url] of Object.entries(result.outputs ?? {})) {
+  console.log(language, url);
+}
+```
+
+Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
+the dubbing pipeline fetches the source itself and rejects plain http). The
+optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
+codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`.
+
+Dubbing is async-only, and the source video may be at most 180 seconds long.
+You are billed per language.
+
+The result is a `DubbingResult`, whose `outputs` is a map of language code to
+dubbed `.mp4` URL — not the `audio`/`video`/`output_url` shape the other
+endpoints use.
+
 ## Configuration
 
 ```ts

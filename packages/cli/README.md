@@ -50,6 +50,9 @@ sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prom
 # Same, but muxed back into the video
 sonilo video-to-video-sound --video clip.mp4 --sfx-prompt "footsteps" --output scored.mp4
 
+# Dub a video into other languages (async only, one file per language)
+sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
+
 # Check an async task
 sonilo tasks get <task-id>
 sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000

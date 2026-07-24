@@ -26,6 +26,8 @@
     "Never send the Authorization header to a presigned result URL.",
     "Catch AuthenticationError (401), PaymentRequiredError (402), RateLimitError (429, has retryAfter) and TaskFailedError (status \"failed\") separately rather than one generic branch — callers usually handle these differently.",
     "video / videoUrl accept exactly one of the two, never both and never neither — validate before constructing a request.",
-    "Self-serve accounts start with free runs per endpoint (2 each for text-to-music, text-to-sfx, audio-ducking; 1 each for the video endpoints), then bill normally. A first call succeeding is not evidence that billing is set up."
+    "Self-serve accounts start with free runs per endpoint (2 each for text-to-music, text-to-sfx, audio-ducking; 1 each for the video endpoints), then bill normally. A first call succeeding is not evidence that billing is set up.",
+    "client.dubbing dubs one video into several languages in a single async call. languages is an array of codes (en, zh_cn, ja, ko, pt, es, de, fr, it, ru); omit it for the default [\"zh_cn\", \"es\", \"fr\"]. You are billed per language.",
+    "A DubbingResult has no audio/video/output_url. Its results live in result.outputs, a map of language code to dubbed .mp4 URL. dubbing's videoUrl must be https — plain http is rejected by the pipeline, not just discouraged."
   ]
 }
