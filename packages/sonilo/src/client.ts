@@ -20,9 +20,24 @@ export interface SoniloClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Milliseconds before an in-flight request is aborted. Default 600000. */
   timeout?: number;
+  /**
+   * Identifies a wrapper built on this SDK (the CLI, the video kit) in the
+   * `X-Sonilo-Client` header. Leave unset for direct SDK use — without an
+   * override a wrapper's traffic is indistinguishable from the SDK's own.
+   */
+  clientName?: string;
+  /** Version reported alongside `clientName`. Defaults to the SDK's version. */
+  clientVersion?: string;
 }
 
 const DEFAULT_BASE_URL = "https://api.sonilo.com";
+
+/**
+ * Reported in `X-Sonilo-Client` unless a wrapper overrides it. First-party
+ * wrappers (the CLI, the video kit) pass their own name so their traffic stays
+ * distinguishable from direct SDK use in server-side analytics.
+ */
+export const DEFAULT_CLIENT_NAME = "sdk-js";
 
 /** Milliseconds before an in-flight request is aborted, unless overridden. */
 export const DEFAULT_TIMEOUT_MS = 600_000;
@@ -32,6 +47,8 @@ export class SoniloClient {
   private readonly apiKey: string;
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly timeout: number;
+  private readonly clientName: string;
+  private readonly clientVersion: string;
   readonly account: Account;
   readonly tasks: Tasks;
   readonly textToMusic: TextToMusic;
@@ -56,6 +73,8 @@ export class SoniloClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.fetchFn = (options.fetch ?? globalThis.fetch).bind(globalThis);
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+    this.clientName = options.clientName ?? DEFAULT_CLIENT_NAME;
+    this.clientVersion = options.clientVersion ?? VERSION;
     this.account = new Account(this);
     this.tasks = new Tasks(this);
     this.textToMusic = new TextToMusic(this);
@@ -83,8 +102,8 @@ export class SoniloClient {
   ): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${this.apiKey}`);
-    headers.set("X-Sonilo-Client", "sdk-js");
-    headers.set("X-Sonilo-Client-Version", VERSION);
+    headers.set("X-Sonilo-Client", this.clientName);
+    headers.set("X-Sonilo-Client-Version", this.clientVersion);
     const timeout = opts.timeout === undefined ? this.timeout : opts.timeout;
     // We only "own" the signal (and may later rewrap its abort as a
     // RequestTimeoutError) when the caller didn't supply one and a timeout

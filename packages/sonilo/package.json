@@ -1,6 +1,6 @@
 {
   "name": "sonilo",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Official TypeScript/JavaScript client for the Sonilo API",
   "license": "MIT",
   "repository": {
