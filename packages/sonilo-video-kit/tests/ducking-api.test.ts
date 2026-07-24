@@ -800,32 +800,56 @@ describe("downloadDuckedMix", () => {
   it(
     "charges spent time against the budget: the download deadline is the REMAINING budget, not a fresh full per-attempt value",
     async () => {
-      // Simulate a poll that already spent most of timeoutMs: only ~100 ms of the
+      // Simulate a poll that already spent most of timeoutMs: only 100 ms of the
       // budget is left, while the per-attempt CAP is a large 5000 ms. The first
-      // attempt's deadline must be min(5000, ~100) = ~100 ms -- proving the
+      // attempt's deadline must be min(5000, 100) = 100 ms -- proving the
       // download got only the LEFTOVER budget, not a fresh 5000 ms. Pre-fix,
       // `deadline` was ignored and each attempt ran the full 5000 ms cap, so the
       // dribble ran until the test's own timeout.
+      //
+      // This used to read the REAL Date.now() for both the deadline and each
+      // attempt's "how much budget is left" check. That pit two independent
+      // wall-clock reads against each other: the abort timer that ends attempt 1
+      // fires at ~100 ms of real time, and attempt 2 then took its own fresh
+      // Date.now() sample. When that sample landed a hair before the 100 ms
+      // line -- entirely plausible on a loaded CI runner -- `remaining` came out
+      // slightly positive, attempt 2 fetched anyway, and `state.calls` flaked
+      // from 1 to 2. Injecting a fake clock removes the race: both `now()` reads
+      // are exact, test-controlled values, decoupled from how long the real
+      // setTimeout backing attempt 1's abort actually takes to fire.
       const dir = await mkdtemp(join(tmpdir(), "svk-dl-"));
       const dest = join(dir, "ducked.wav");
       const { fakeFetch, state } = dribblingFetch();
 
+      const BASE = 1_000_000;
+      let nowCalls = 0;
+      // downloadDuckedMix reads `now()` exactly once per attempt to compute the
+      // remaining budget: attempt 1 sees 100 ms left, attempt 2 (if attempt 1 is
+      // retried as a DownloadTimeoutError) sees the budget fully spent.
+      const fakeNow = (): number => {
+        nowCalls += 1;
+        return nowCalls === 1 ? BASE : BASE + 100;
+      };
+
       const err = await downloadDuckedMix("https://r2.example/ducked.wav", dest, fakeFetch, {
         maxBytes: CAP,
         timeoutMs: 5_000, // a LARGE per-attempt cap...
-        deadline: Date.now() + 100, // ...but only ~100 ms of overall budget remains
+        deadline: BASE + 100, // ...but only 100 ms of overall budget remains
         sleep: NO_SLEEP,
+        now: fakeNow,
       }).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(VideoKitError); // the budget-exhausted error
-      // The first attempt was aborted by its DEADLINE, and that deadline was the
-      // remaining budget (<= 100 ms), NOT the fresh 5000 ms per-attempt cap.
+      // The first attempt was aborted by its DEADLINE, and that deadline was
+      // exactly the remaining budget (100 ms), NOT the fresh 5000 ms per-attempt
+      // cap.
       const reason = state.abortReason as { name?: string; timeoutMs?: number };
       expect(reason?.name).toBe("DownloadTimeoutError");
-      expect(reason.timeoutMs).toBeGreaterThan(0);
-      expect(reason.timeoutMs).toBeLessThanOrEqual(100);
+      expect(reason.timeoutMs).toBe(100);
       // The second attempt short-circuited on the spent budget before fetching.
       expect(state.calls).toBe(1);
+      // Both budget checks (one per attempt) actually ran through the fake clock.
+      expect(nowCalls).toBe(2);
       await expect(readFile(dest)).rejects.toThrow();
     },
     5_000,
