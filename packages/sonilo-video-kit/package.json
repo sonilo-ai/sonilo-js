@@ -38,11 +38,11 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "sonilo": "^0.5.1"
+    "sonilo": ">=0.5.1 <1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",
-    "sonilo": "^0.5.1",
+    "sonilo": ">=0.5.1 <1.0.0",
     "tsup": "^8.0.2",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
