@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import {
   DUBBING_WAIT_TIMEOUT_MS,
+  MUSIC_SEGMENTS,
+  SFX_SEGMENTS,
   extFromUrl,
   extractApiKey,
   formatTrialSummary,
@@ -9,19 +15,35 @@ import {
   outputPath,
   parseDubbingArgs,
   parseFormat,
+  readSegments,
   runAccount,
   runDubbing,
   runTasksGet,
   runTasksWait,
+  runTextToMusic,
   runUsage,
+  runVideoToMusic,
+  runVideoToSfx,
   runVideoToSound,
   runVideoToVideoSound,
 } from "../src/cli.js";
 import { json, mockClient } from "./helpers.js";
 
-vi.mock("node:fs/promises", () => ({
-  writeFile: vi.fn().mockResolvedValue(undefined),
-}));
+/** A one-shot readable stream carrying `content`, for `--segments @-`. */
+function stdinWith(content: string): NodeJS.ReadableStream {
+  return Readable.from([content]);
+}
+
+// Only writeFile is mocked (tests assert what would have been written without
+// touching disk); readFile passes through to the real implementation so
+// `--segments @<path>` tests can read real temp files.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    writeFile: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 describe("outputPath", () => {
   it("uses the explicit path when given", () => {
@@ -86,6 +108,340 @@ describe("extFromUrl", () => {
   });
 });
 
+describe("readSegments", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns undefined when the flag was not passed", async () => {
+    await expect(readSegments("text-to-music", undefined, MUSIC_SEGMENTS)).resolves.toBeUndefined();
+  });
+
+  it("parses an inline JSON array", async () => {
+    await expect(
+      readSegments(
+        "text-to-music",
+        '[{"start":0,"prompt":"airy pads","label":"intro"}]',
+        MUSIC_SEGMENTS,
+      ),
+    ).resolves.toEqual([{ start: 0, prompt: "airy pads", label: "intro" }]);
+  });
+
+  it("reads from @<path>", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "sonilo-segments-"));
+    const file = join(tmpDir, "segments.json");
+    writeFileSync(file, '[{"start":0,"end":5,"prompt":"engine hum"}]');
+
+    await expect(readSegments("video-to-sfx", `@${file}`, SFX_SEGMENTS)).resolves.toEqual([
+      { start: 0, end: 5, prompt: "engine hum" },
+    ]);
+  });
+
+  it("reads from @- (stdin)", async () => {
+    const stdin = stdinWith('[{"start":0,"prompt":"airy pads"}]');
+    await expect(readSegments("text-to-music", "@-", MUSIC_SEGMENTS, stdin)).resolves.toEqual([
+      { start: 0, prompt: "airy pads" },
+    ]);
+  });
+
+  it("fails with the parse error and names the inline value as the source", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(readSegments("text-to-music", "{not json", MUSIC_SEGMENTS)).rejects.toThrow(
+      "process.exit",
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("text-to-music --segments: invalid JSON in the --segments value"),
+    );
+  });
+
+  it("fails with the parse error and names the file as the source", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "sonilo-segments-"));
+    const file = join(tmpDir, "bad.json");
+    writeFileSync(file, "{not json");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(readSegments("text-to-music", `@${file}`, MUSIC_SEGMENTS)).rejects.toThrow(
+      "process.exit",
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(`text-to-music --segments: invalid JSON in file "${file}"`),
+    );
+  });
+
+  it("fails when the value is not an array", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      readSegments("text-to-music", '{"start":0,"prompt":"x"}', MUSIC_SEGMENTS),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("text-to-music --segments must be a non-empty JSON array"),
+    );
+  });
+
+  it("fails when the array is empty", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(readSegments("text-to-music", "[]", MUSIC_SEGMENTS)).rejects.toThrow(
+      "process.exit",
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("got an empty array"),
+    );
+  });
+
+  it("rejects a music command given SFX-shaped segments, naming the music shape", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      readSegments(
+        "video-to-music",
+        '[{"start":0,"end":5,"prompt":"engine hum"}]',
+        MUSIC_SEGMENTS,
+      ),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: video-to-music segments take {start, prompt, label?} — got an object with keys start, end, prompt",
+    );
+  });
+
+  it("rejects an SFX command given music-shaped segments, naming the SFX shape", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      readSegments(
+        "video-to-sfx",
+        '[{"start":0,"prompt":"airy pads","label":"intro"}]',
+        SFX_SEGMENTS,
+      ),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: video-to-sfx segments take {start, end, prompt} — got an object with keys start, prompt, label",
+    );
+  });
+
+  it("fails when a required field has the wrong type", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      readSegments("text-to-music", '[{"start":"0","prompt":"x"}]', MUSIC_SEGMENTS),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('"start" must be a number'),
+    );
+  });
+
+  it("passes an unrecognized future key through untouched", async () => {
+    await expect(
+      readSegments(
+        "text-to-music",
+        '[{"start":0,"prompt":"x","futureField":"kept"}]',
+        MUSIC_SEGMENTS,
+      ),
+    ).resolves.toEqual([{ start: 0, prompt: "x", futureField: "kept" }]);
+  });
+});
+
+describe("runTextToMusic --segments", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reaches the async submit request as JSON", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/text-to-music")
+        ? json({ task_id: "tm1", status: "processing" })
+        : json({
+            task_id: "tm1",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runTextToMusic(client, [
+      "--prompt",
+      "warm pads",
+      "--duration",
+      "30",
+      "--async",
+      "--segments",
+      '[{"start":0,"prompt":"airy pads","label":"intro"}]',
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("segments")).toBe(
+      JSON.stringify([{ start: 0, prompt: "airy pads", label: "intro" }]),
+    );
+  });
+
+  it("sends no segments field at all when --segments is omitted", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/text-to-music")
+        ? json({ task_id: "tm2", status: "processing" })
+        : json({
+            task_id: "tm2",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runTextToMusic(client, ["--prompt", "warm pads", "--duration", "30", "--async"]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("segments")).toBe(false);
+  });
+});
+
+describe("runVideoToMusic --segments", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reaches the async submit request as JSON", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-music")
+        ? json({ task_id: "vm1", status: "processing" })
+        : json({
+            task_id: "vm1",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--async",
+      "--segments",
+      '[{"start":0,"prompt":"tense synths"}]',
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("segments")).toBe(JSON.stringify([{ start: 0, prompt: "tense synths" }]));
+  });
+});
+
+describe("runVideoToSfx --segments", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reaches the submit request from inline JSON", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sfx")
+        ? json({ task_id: "vs1", status: "processing" })
+        : json({
+            task_id: "vs1",
+            status: "succeeded",
+            audio: { url: "https://cdn.example.com/foley.wav" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToSfx(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--segments",
+      '[{"start":0,"end":5,"prompt":"engine hum"}]',
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("segments")).toBe(
+      JSON.stringify([{ start: 0, end: 5, prompt: "engine hum" }]),
+    );
+  });
+
+  it("reaches the submit request from @<file>", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "sonilo-segments-"));
+    try {
+      const file = join(tmpDir, "segments.json");
+      writeFileSync(file, '[{"start":0,"end":5,"prompt":"engine hum"}]');
+      const { client, calls } = mockClient((url) =>
+        url.endsWith("/v1/video-to-sfx")
+          ? json({ task_id: "vs2", status: "processing" })
+          : json({
+              task_id: "vs2",
+              status: "succeeded",
+              audio: { url: "https://cdn.example.com/foley.wav" },
+            }),
+      );
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await runVideoToSfx(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--segments",
+        `@${file}`,
+      ]);
+
+      const form = calls[0]!.init.body as FormData;
+      expect(form.get("segments")).toBe(
+        JSON.stringify([{ start: 0, end: 5, prompt: "engine hum" }]),
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits with a shape-mismatch error naming video-to-sfx when given music-shaped segments", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToSfx(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--segments",
+        '[{"start":0,"prompt":"airy pads"}]',
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("video-to-sfx segments take {start, end, prompt}"),
+    );
+  });
+});
+
 describe("runVideoToSound", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -132,6 +488,32 @@ describe("runVideoToSound", () => {
 
     await expect(runVideoToSound(client, ["--sfx-prompt", "x"])).rejects.toThrow("process.exit");
   });
+
+  it("sends --segments through to the request", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "t1b", status: "processing" })
+        : json({
+            task_id: "t1b",
+            status: "succeeded",
+            output_url: "https://cdn.example.com/out.m4a",
+            output_type: "audio",
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--segments",
+      '[{"start":0,"end":5,"prompt":"footsteps"}]',
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("segments")).toBe(JSON.stringify([{ start: 0, end: 5, prompt: "footsteps" }]));
+  });
 });
 
 describe("runVideoToVideoSound", () => {
@@ -158,6 +540,26 @@ describe("runVideoToVideoSound", () => {
     await runVideoToVideoSound(client, ["--video-url", "https://in.example.com/clip.mp4"]);
 
     expect(vi.mocked(writeFile).mock.calls[0]?.[0]).toBe("output.mp4");
+  });
+
+  it("exits with a shape-mismatch error naming video-to-video-sound when given music-shaped segments", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToVideoSound(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--segments",
+        '[{"start":0,"prompt":"footsteps","label":"intro"}]',
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: video-to-video-sound segments take {start, end, prompt} — got an object with keys start, prompt, label",
+    );
   });
 });
 

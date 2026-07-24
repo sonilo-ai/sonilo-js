@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -10,7 +10,9 @@ import {
   type DubbingParams,
   type DubbingResult,
   type MusicTaskResult,
+  type Segment,
   type SfxResult,
+  type SfxSegment,
   type SoundResult,
   type TrialQuota,
   type VideoToSoundParams,
@@ -43,6 +45,8 @@ text-to-music options:
   --output <path>       Where to save the audio (default: ./output.<ext>)
   --format <m4a|wav>    Output container. wav forces --async. Default: m4a
   --async               Submit and poll instead of streaming the response
+  --segments <json>     Per-segment prompts: [{start, prompt, label?}, ...]
+                        (see "Segments" below)
 
 video-to-music options:
   --video <path>              Required (or --video-url). Local file to score.
@@ -53,6 +57,8 @@ video-to-music options:
   --isolate-vocals              Split out a vocals-only stem. Forces --async.
   --preserve-speech             Keep source speech in the mix. Forces --async.
   --async                       Submit and poll instead of streaming
+  --segments <json>             Per-segment prompts: [{start, prompt, label?}, ...]
+                                (see "Segments" below)
 
 text-to-sfx options:
   --prompt <text>        Required. What the sound effect should be.
@@ -66,6 +72,8 @@ video-to-sfx options:
   --prompt <text>         Optional creative direction for the effect.
   --output <path>         Where to save the audio (default: ./output.<ext>)
   --format <wav|mp3|aac|flac>   Output format. Default: wav
+  --segments <json>       Per-segment prompts: [{start, end, prompt}, ...]
+                          (see "Segments" below)
 
 video-to-sound / video-to-video-sound options (both async-only):
   --video <path>         Required (or --video-url). Local file to score.
@@ -75,6 +83,19 @@ video-to-sound / video-to-video-sound options (both async-only):
   --preserve-speech       Keep the source speech in the result.
   --no-ducking            Disable ducking (music is ducked under speech by default).
   --output <path>         Where to save the result (default: ./output.<ext>)
+  --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
+                          (see "Segments" below)
+
+Segments:
+  --segments takes a JSON array, and accepts three forms for the value:
+    --segments '[{"start":0,"prompt":"airy pads"}]'   inline JSON
+    --segments @segments.json                          read from a file
+    --segments @-                                       read from stdin
+  A value starting with "@" names a source to read from ("@-" means stdin);
+  anything else is parsed as JSON directly. The required fields differ by
+  command — music commands take {start, prompt, label?}, SFX commands take
+  {start, end, prompt} — but ordering, spacing and count limits are enforced
+  by the API itself, not the CLI.
 
 dubbing options (async-only):
   --video <path>         Required (or --video-url). Local file to dub.
@@ -139,6 +160,163 @@ export function parseFormat<T extends string>(
     fail(`invalid --format "${value}". Allowed: ${allowed.join(", ")}`);
   }
   return normalized as T;
+}
+
+/** One field of a segment shape, used both to validate a parsed segment and
+ * to render the shape in an error message. */
+interface SegmentField {
+  key: string;
+  type: "number" | "string";
+}
+
+/** The set of fields a command's `--segments` array elements must (and may)
+ * have. There are exactly two shapes in the API today — music and SFX — and
+ * `describe` is how the shape reads in a failure message, e.g.
+ * "{start, prompt, label?}". */
+interface SegmentShape {
+  describe: string;
+  required: readonly SegmentField[];
+  optional?: readonly SegmentField[];
+}
+
+/** Music segments: `text-to-music`, `video-to-music`. */
+export const MUSIC_SEGMENTS: SegmentShape = {
+  describe: "{start, prompt, label?}",
+  required: [
+    { key: "start", type: "number" },
+    { key: "prompt", type: "string" },
+  ],
+  optional: [{ key: "label", type: "string" }],
+};
+
+/** SFX segments: `video-to-sfx`, `video-to-sound`, `video-to-video-sound`
+ * (and `video-to-video-sfx` in the SDK, which has no CLI command yet). */
+export const SFX_SEGMENTS: SegmentShape = {
+  describe: "{start, end, prompt}",
+  required: [
+    { key: "start", type: "number" },
+    { key: "end", type: "number" },
+    { key: "prompt", type: "string" },
+  ],
+};
+
+/** Every field name either segment shape recognizes. A key outside this set
+ * is a field neither shape knows about yet — most likely a future API
+ * addition — and is forwarded untouched rather than rejected. A key inside
+ * this set but not part of the *requested* shape is a field that belongs to
+ * the *other* shape, which is almost always the predictable mistake of
+ * pointing SFX-shaped segments at a music command or vice versa, so that one
+ * is rejected. */
+const ALL_SEGMENT_KEYS = new Set(
+  [...MUSIC_SEGMENTS.required, ...(MUSIC_SEGMENTS.optional ?? [])]
+    .concat(SFX_SEGMENTS.required)
+    .map((field) => field.key),
+);
+
+/** Human description of a parsed `--segments` value, for the "must be a
+ * non-empty array" failure. */
+function describeJsonValue(value: unknown): string {
+  if (Array.isArray(value)) return value.length === 0 ? "an empty array" : "an array";
+  if (value === null) return "null";
+  return `a ${typeof value}`;
+}
+
+function validateSegment(command: string, shape: SegmentShape, item: unknown, index: number): void {
+  if (typeof item !== "object" || item === null || Array.isArray(item)) {
+    fail(`${command} segments take ${shape.describe} — element ${index} is not an object`);
+  }
+  const obj = item as Record<string, unknown>;
+  const allowedKeys = new Set(
+    [...shape.required, ...(shape.optional ?? [])].map((field) => field.key),
+  );
+  const keys = Object.keys(obj);
+  const missingRequired = shape.required.some((field) => !(field.key in obj));
+  const foreignKey = keys.some((key) => ALL_SEGMENT_KEYS.has(key) && !allowedKeys.has(key));
+  if (missingRequired || foreignKey) {
+    fail(
+      `${command} segments take ${shape.describe} — got an object with keys ${
+        keys.join(", ") || "(none)"
+      }`,
+    );
+  }
+  for (const field of [...shape.required, ...(shape.optional ?? [])]) {
+    const value = obj[field.key];
+    if (value === undefined) continue; // optional field, absent
+    if (typeof value !== field.type) {
+      fail(
+        `${command} segments take ${shape.describe} — "${field.key}" must be a ${field.type} (element ${index})`,
+      );
+    }
+  }
+}
+
+/** Read all of `stream` into a UTF-8 string, for `--segments @-`. */
+async function readAllUtf8(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+/**
+ * Read and validate a `--segments` flag value for one command.
+ *
+ * `raw` is the flag's literal value, in one of three forms (the curl / gh /
+ * aws convention): inline JSON, `@path` to read a file, or `@-` to read
+ * stdin. Returns `undefined` untouched when the flag was not passed, so
+ * callers can drop it straight into a params object and have the SDK omit
+ * `segments` entirely.
+ *
+ * Validation is shape-only: the value must parse as JSON, be a non-empty
+ * array of objects, and each object must carry the given shape's required
+ * fields with the right types. It deliberately does not replicate the
+ * server's semantic rules (first segment at start 0, minimum spacing, the
+ * label enum, count caps) — those live server-side and a client-side copy
+ * would drift the moment the backend changes; malformed-but-shape-valid
+ * input is left for the API's own 422.
+ */
+export async function readSegments(
+  command: string,
+  raw: string | undefined,
+  shape: SegmentShape,
+  stdin: NodeJS.ReadableStream = process.stdin,
+): Promise<unknown[] | undefined> {
+  if (raw === undefined) return undefined;
+
+  let source: string;
+  let sourceDesc: string;
+  if (raw.startsWith("@")) {
+    const path = raw.slice(1);
+    if (path === "-") {
+      sourceDesc = "stdin";
+      source = await readAllUtf8(stdin);
+    } else {
+      sourceDesc = `file "${path}"`;
+      try {
+        source = await readFile(path, "utf-8");
+      } catch (err) {
+        fail(`${command} --segments: could not read ${sourceDesc}: ${(err as Error).message}`);
+      }
+    }
+  } else {
+    sourceDesc = "the --segments value";
+    source = raw;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch (err) {
+    fail(`${command} --segments: invalid JSON in ${sourceDesc}: ${(err as Error).message}`);
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    fail(`${command} --segments must be a non-empty JSON array — got ${describeJsonValue(parsed)}`);
+  }
+
+  parsed.forEach((item, index) => validateSegment(command, shape, item, index));
+  return parsed;
 }
 
 /** Pull `--api-key <value>` out of the arguments from any position and return
@@ -243,15 +421,19 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
       output: { type: "string" },
       format: { type: "string" },
       async: { type: "boolean" },
+      segments: { type: "string" },
     },
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
   const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
   const useAsync = values.async === true || format === "wav";
+  const segments = (await readSegments("text-to-music", values.segments, MUSIC_SEGMENTS)) as
+    | Segment[]
+    | undefined;
 
   if (!useAsync) {
-    const track = await client.textToMusic.generate({ prompt, duration });
+    const track = await client.textToMusic.generate({ prompt, duration, segments });
     await writeAudio(track.audio, outputPath(values.output, format));
     return;
   }
@@ -260,6 +442,7 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
     duration,
     mode: "async",
     outputFormat: format,
+    segments,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
@@ -280,6 +463,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
       "isolate-vocals": { type: "boolean" },
       "preserve-speech": { type: "boolean" },
       async: { type: "boolean" },
+      segments: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -290,12 +474,16 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   const preserveSpeech = values["preserve-speech"] === true;
   const useAsync =
     values.async === true || format === "wav" || isolateVocals || preserveSpeech;
+  const segments = (await readSegments("video-to-music", values.segments, MUSIC_SEGMENTS)) as
+    | Segment[]
+    | undefined;
 
   if (!useAsync) {
     const track = await client.videoToMusic.generate({
       video: values.video,
       videoUrl: values["video-url"],
       prompt: values.prompt,
+      segments,
     });
     await writeAudio(track.audio, outputPath(values.output, format));
     return;
@@ -308,6 +496,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
     outputFormat: format,
     isolateVocals,
     preserveSpeech,
+    segments,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
@@ -348,17 +537,22 @@ export async function runVideoToSfx(client: SoniloClient, argv: string[]): Promi
       prompt: { type: "string" },
       output: { type: "string" },
       format: { type: "string" },
+      segments: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
   const format = parseFormat(values.format, ["wav", "mp3", "aac", "flac"] as const, "wav");
+  const segments = (await readSegments("video-to-sfx", values.segments, SFX_SEGMENTS)) as
+    | SfxSegment[]
+    | undefined;
   const task = await client.videoToSfx.submit({
     video: values.video,
     videoUrl: values["video-url"],
     prompt: values.prompt,
     audioFormat: format,
+    segments,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SfxResult>(task.task_id);
@@ -369,11 +563,16 @@ export async function runVideoToSfx(client: SoniloClient, argv: string[]): Promi
 
 /** Shared flag parsing for the two combined music + SFX endpoints, which take
  * identical form fields. `ducking` is default-ON server-side, so it is only
- * sent when the user explicitly opts out with --no-ducking. */
-function parseSoundArgs(argv: string[]): {
+ * sent when the user explicitly opts out with --no-ducking. `command` names
+ * the caller in `--segments` failure messages ("video-to-sound" vs
+ * "video-to-video-sound"). */
+async function parseSoundArgs(
+  command: string,
+  argv: string[],
+): Promise<{
   params: VideoToSoundParams;
   output: string | undefined;
-} {
+}> {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -384,11 +583,15 @@ function parseSoundArgs(argv: string[]): {
       "preserve-speech": { type: "boolean" },
       "no-ducking": { type: "boolean" },
       output: { type: "string" },
+      segments: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
+  const segments = (await readSegments(command, values.segments, SFX_SEGMENTS)) as
+    | SfxSegment[]
+    | undefined;
   return {
     params: {
       video: values.video,
@@ -397,13 +600,14 @@ function parseSoundArgs(argv: string[]): {
       sfxPrompt: values["sfx-prompt"],
       preserveSpeech: values["preserve-speech"] === true ? true : undefined,
       ducking: values["no-ducking"] === true ? false : undefined,
+      segments,
     },
     output: values.output,
   };
 }
 
 export async function runVideoToSound(client: SoniloClient, argv: string[]): Promise<void> {
-  const { params, output } = parseSoundArgs(argv);
+  const { params, output } = await parseSoundArgs("video-to-sound", argv);
   const task = await client.videoToSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
@@ -413,7 +617,7 @@ export async function runVideoToSound(client: SoniloClient, argv: string[]): Pro
 }
 
 export async function runVideoToVideoSound(client: SoniloClient, argv: string[]): Promise<void> {
-  const { params, output } = parseSoundArgs(argv);
+  const { params, output } = await parseSoundArgs("video-to-video-sound", argv);
   const task = await client.videoToVideoSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
