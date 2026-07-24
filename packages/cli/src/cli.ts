@@ -85,9 +85,9 @@ dubbing options (async-only):
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
                           Default: ./output.mp4
-  --timeout <ms>          How long to wait for the task. Default: 3600000
-                          (1 hour; the backend itself keeps trying for up to
-                          2 hours). If the wait times out, the task is still
+  --timeout <ms>          How long to wait for the task. Default: 7200000
+                          (2 hours, matching the backend's own ceiling for a
+                          dubbing job). If the wait times out, the task is still
                           running — resume waiting on it with
                           "sonilo tasks wait <task-id>" using the task id
                           printed in the "Submitted task ..." line.
@@ -445,9 +445,9 @@ export function languageOutputPath(template: string, language: string): string {
  * a 180-second video dubbed into several languages routinely takes longer
  * than 10 minutes, so using the generic default would make the CLI throw
  * `TaskTimeoutError` and exit non-zero on runs that are still succeeding
- * server-side. 1 hour is a more realistic default while staying well under
- * the backend's own 2-hour ceiling; `--timeout` overrides it. */
-export const DUBBING_WAIT_TIMEOUT_MS = 3_600_000;
+ * server-side. Matching the backend's own 2-hour ceiling means the CLI gives
+ * up only once the backend has; `--timeout` overrides it. */
+export const DUBBING_WAIT_TIMEOUT_MS = 7_200_000;
 
 export function parseDubbingArgs(argv: string[]): {
   params: DubbingParams;

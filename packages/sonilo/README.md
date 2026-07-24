@@ -198,16 +198,17 @@ for (const [language, url] of Object.entries(result.outputs ?? {})) {
 ```
 
 `generate()` wraps submit + poll, same as the other async endpoints, and
-accepts a `{ timeout }` option to override the default 10-minute wait — the
+accepts a `{ timeout }` option to override the default 10-minute wait. The
 dubbing pipeline can take much longer than that, especially with several
-languages, so pass a longer timeout (or use `submit()` +
-`client.tasks.wait()` yourself, as above) for anything but the shortest
-clips:
+languages in one call, so pass a longer timeout for anything but the shortest
+clips. 7,200,000 ms matches the backend's own ceiling for a dubbing job and is
+what the CLI defaults to. For long jobs you can also use `submit()` plus your
+own `client.tasks.wait()`, as above:
 
 ```ts
 const result = await client.dubbing.generate(
   { videoUrl: "https://example.com/clip.mp4", languages: ["es", "fr"] },
-  { timeout: 3_600_000 }, // 1 hour
+  { timeout: 7_200_000 }, // 2 hours, the backend's own ceiling
 );
 ```
 
