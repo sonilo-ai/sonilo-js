@@ -38,6 +38,14 @@ export interface DuckingResult {
  * a retry costs no wall-clock time. */
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
+/** How the download reads "now" for its budget math (epoch ms). Injected by
+ * tests for the same reason `Sleep` is: production always gets the real
+ * `Date.now`, but a test driving the overall `deadline` needs EXACT control
+ * over what "now" reads at each attempt, not just a short real-time window,
+ * or the budget-exhausted branch becomes a wall-clock race (see the
+ * "charges spent time against the budget" test in ducking-api.test.ts). */
+export type Clock = () => number;
+
 interface SubmitBody {
   task_id?: string;
 }
@@ -568,9 +576,14 @@ export async function downloadDuckedMix(
     deadline?: number;
     signal?: AbortSignal;
     sleep?: Sleep;
+    /** Injected by tests so the budget math below reads an exact, test-driven
+     * value instead of the real wall clock. Defaults to `Date.now`, so
+     * omitting it preserves the pre-existing production behavior exactly. */
+    now?: Clock;
   },
 ): Promise<void> {
   const sleep = opts.sleep ?? delay;
+  const now = opts.now ?? Date.now;
   const perAttemptMs = opts.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   // Runs ONCE, before any fetch or retry: a bad scheme/host is terminal, and
   // rejecting here means the hostile URL is never fetched at all.
@@ -588,7 +601,7 @@ export async function downloadDuckedMix(
       // deadline, so time already spent is never resurrected as fresh budget.
       let attemptTimeoutMs = perAttemptMs;
       if (opts.deadline !== undefined) {
-        const remaining = opts.deadline - Date.now();
+        const remaining = opts.deadline - now();
         if (remaining <= 0) throw new DownloadBudgetExhaustedError();
         attemptTimeoutMs = Math.min(perAttemptMs, remaining);
       }
