@@ -1,5 +1,5 @@
 ---
-"sonilo": patch
+"sonilo": minor
 ---
 
 Add the `trial` field to `AccountServices`, mirroring the API's free-trial
