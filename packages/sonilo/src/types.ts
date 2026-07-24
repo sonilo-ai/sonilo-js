@@ -346,3 +346,42 @@ export interface SoundResult extends BaseTaskResult {
   sfx?: SfxMedia;
   duration_seconds?: number;
 }
+
+/**
+ * A target language for /v1/dubbing. The union stays open (`string & {}`) so a
+ * language added server-side still type-checks against an older SDK — the
+ * backend, not this list, is the authority on what is supported.
+ */
+export type DubbingLanguage =
+  | "en"
+  | "zh_cn"
+  | "ja"
+  | "ko"
+  | "pt"
+  | "es"
+  | "de"
+  | "fr"
+  | "it"
+  | "ru"
+  | (string & {});
+
+export interface DubbingParams {
+  /** Exactly one of `video` / `videoUrl`. */
+  video?: VideoInput;
+  /**
+   * Exactly one of `video` / `videoUrl`. Must be an `https://` URL — the
+   * dubbing pipeline fetches the source itself and rejects plain http.
+   */
+  videoUrl?: string;
+  /** Omit to get the server default, `["zh_cn", "es", "fr"]`. */
+  languages?: DubbingLanguage[];
+}
+
+export interface DubbingResult extends BaseTaskResult {
+  /**
+   * One dubbed video URL per requested language, keyed by language code.
+   * Unlike every other endpoint's envelope this is a map, not an `audio`/
+   * `video` slot — a dubbing task renders N artifacts, one per language.
+   */
+  outputs?: Record<string, string>;
+}
