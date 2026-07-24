@@ -1,6 +1,6 @@
 {
   "name": "sonilo-cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Command-line interface for the Sonilo API — generate music and sound effects without writing code",
   "license": "MIT",
   "repository": {
@@ -26,7 +26,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "sonilo": ">=0.5.1 <1.0.0"
+    "sonilo": ">=0.6.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
