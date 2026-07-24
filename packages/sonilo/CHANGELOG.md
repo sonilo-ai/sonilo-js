@@ -1,5 +1,25 @@
 # sonilo
 
+## 0.7.0
+
+### Minor Changes
+
+- 3d19e10: Add dubbing support. `client.dubbing.submit()` / `.generate()` call `POST /v1/dubbing`, dubbing one video into several target languages in a single async call. The result's `outputs` field maps each language code to a dubbed `.mp4` URL. The CLI gains a `sonilo dubbing` command that writes one file per language, and waits up to 1 hour by default (override with `--timeout <ms>`) instead of the SDK's generic 10-minute default, since the dubbing backend itself keeps trying for up to 2 hours.
+- c0c559d: Make the free trial visible before it runs out, and distinguishable when it does.
+
+  `TrialExhaustedError` is a new subclass of `PaymentRequiredError`, raised for
+  the `402` whose body carries `code: "trial_exhausted"` — the free trial for
+  that service is spent and the account has never been funded, so a retry can
+  never succeed and the caller should ask for a payment method instead. Existing
+  `catch (err) { if (err instanceof PaymentRequiredError) ... }` code keeps
+  catching it unchanged; order the checks most-specific-first to tell it apart
+  from a funded wallet that ran dry (`insufficient_balance`).
+
+  `sonilo account` now prints a one-line free-trial summary
+  (`Free trial: text-to-music 1/2 left, ...`) on stderr, leaving stdout as pure
+  JSON so pipelines are unaffected. The line is omitted for accounts that have
+  no trial allowance to report.
+
 ## 0.6.0
 
 ### Minor Changes
