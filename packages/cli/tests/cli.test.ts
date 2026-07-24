@@ -3,9 +3,12 @@ import { writeFile } from "node:fs/promises";
 import {
   extFromUrl,
   extractApiKey,
+  languageOutputPath,
   outputPath,
+  parseDubbingArgs,
   parseFormat,
   runAccount,
+  runDubbing,
   runTasksGet,
   runTasksWait,
   runUsage,
@@ -153,6 +156,97 @@ describe("runVideoToVideoSound", () => {
     await runVideoToVideoSound(client, ["--video-url", "https://in.example.com/clip.mp4"]);
 
     expect(vi.mocked(writeFile).mock.calls[0]?.[0]).toBe("output.mp4");
+  });
+});
+
+describe("languageOutputPath", () => {
+  it("inserts the language before the extension", () => {
+    expect(languageOutputPath("out/clip.mp4", "es")).toBe("out/clip.es.mp4");
+    expect(languageOutputPath("output.mp4", "zh_cn")).toBe("output.zh_cn.mp4");
+  });
+
+  it("appends .<lang>.mp4 when the template has no extension", () => {
+    expect(languageOutputPath("clip", "fr")).toBe("clip.fr.mp4");
+  });
+
+  it("does not mistake a dot in a directory name for an extension", () => {
+    expect(languageOutputPath("v1.2/clip", "de")).toBe("v1.2/clip.de.mp4");
+  });
+});
+
+describe("parseDubbingArgs", () => {
+  it("splits --languages on commas and trims", () => {
+    const { params } = parseDubbingArgs([
+      "--video-url",
+      "https://x/v.mp4",
+      "--languages",
+      "es, fr ,de",
+    ]);
+    expect(params.languages).toEqual(["es", "fr", "de"]);
+    expect(params.videoUrl).toBe("https://x/v.mp4");
+  });
+
+  it("leaves languages undefined when the flag is absent", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.languages).toBeUndefined();
+  });
+});
+
+describe("runDubbing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes one file per language, named from the --output template", async () => {
+    // `json()` from ./helpers.js takes no status argument, and `download()`
+    // defaults to globalThis.fetch rather than the client's injected fetch —
+    // so the result URLs are served by a spy on globalThis.fetch, exactly as
+    // the runVideoToSound test above does.
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/dubbing")
+        ? json({ task_id: "db1", status: "processing" })
+        : json({
+            task_id: "db1",
+            status: "succeeded",
+            outputs: {
+              es: "https://cdn.example.com/es.mp4",
+              fr: "https://cdn.example.com/fr.mp4",
+            },
+          }),
+    );
+    // A fresh Response per call: runDubbing downloads once per language, and
+    // a Response body can only be read once, so reusing a single instance
+    // (mockResolvedValue) would throw "Body has already been read" on the
+    // second download.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runDubbing(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--languages",
+      "es,fr",
+      "--output",
+      "out/clip.mp4",
+    ]);
+
+    expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/dubbing");
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toContain("out/clip.es.mp4");
+    expect(written).toContain("out/clip.fr.mp4");
+  });
+
+  it("exits when neither --video nor --video-url is given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(runDubbing(client, ["--languages", "es"])).rejects.toThrow("process.exit");
   });
 });
 
