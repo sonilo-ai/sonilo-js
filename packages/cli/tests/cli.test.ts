@@ -4,6 +4,7 @@ import {
   DUBBING_WAIT_TIMEOUT_MS,
   extFromUrl,
   extractApiKey,
+  formatTrialSummary,
   languageOutputPath,
   outputPath,
   parseDubbingArgs,
@@ -331,6 +332,65 @@ describe("runAccount", () => {
     expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/account/services");
     expect(logSpy).toHaveBeenCalledWith(JSON.stringify(services, null, 2));
     logSpy.mockRestore();
+  });
+
+  it("prints the free-trial summary on stderr, leaving stdout pure JSON", async () => {
+    const services = {
+      available_services: ["text_to_music", "video_to_music"],
+      rpm_limit: 60,
+      concurrency_limit: 5,
+      discount_factor: 1,
+      max_upload_size_mb: 300,
+      trial: {
+        text_to_music: { granted: 2, used: 1, remaining: 1 },
+        video_to_music: { granted: 1, used: 1, remaining: 0 },
+      },
+    };
+    const { client } = mockClient(() => json(services));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runAccount(client);
+
+    expect(logSpy).toHaveBeenCalledWith(JSON.stringify(services, null, 2));
+    expect(errSpy).toHaveBeenCalledWith(
+      "Free trial: text-to-music 1/2 left, video-to-music 0/1 left",
+    );
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it("prints no summary when the account has no trial field", async () => {
+    const { client } = mockClient(() =>
+      json({
+        available_services: ["text_to_music"],
+        rpm_limit: 60,
+        concurrency_limit: 5,
+        discount_factor: 1,
+        max_upload_size_mb: 300,
+      }),
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runAccount(client);
+
+    expect(errSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+});
+
+describe("formatTrialSummary", () => {
+  it("returns undefined for an absent or empty allowance", () => {
+    expect(formatTrialSummary(undefined)).toBeUndefined();
+    expect(formatTrialSummary({})).toBeUndefined();
+  });
+
+  it("spells service keys the way the endpoints do", () => {
+    expect(
+      formatTrialSummary({ video_to_video_sound: { granted: 1, used: 0, remaining: 1 } }),
+    ).toBe("Free trial: video-to-video-sound 1/1 left");
   });
 });
 

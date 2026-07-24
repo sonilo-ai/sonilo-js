@@ -12,6 +12,7 @@ import {
   type MusicTaskResult,
   type SfxResult,
   type SoundResult,
+  type TrialQuota,
   type VideoToSoundParams,
   type WaitOptions,
 } from "sonilo";
@@ -186,8 +187,32 @@ function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
+/** One-line human summary of the free-trial allowance, e.g.
+ * "Free trial: text-to-music 1/2 left, video-to-music 0/1 left".
+ *
+ * Returns undefined when there is nothing to report — the `trial` field is
+ * present only for self-serve accounts, and printing an empty "Free trial:"
+ * label would read as a bug. */
+export function formatTrialSummary(
+  trial: Record<string, TrialQuota> | undefined,
+): string | undefined {
+  if (!trial) return undefined;
+  const parts = Object.entries(trial).map(
+    // Service keys are task_types (text_to_music); show them the way the
+    // endpoints and the error messages spell them (text-to-music).
+    ([service, quota]) =>
+      `${service.split("_").join("-")} ${quota.remaining}/${quota.granted} left`,
+  );
+  return parts.length > 0 ? `Free trial: ${parts.join(", ")}` : undefined;
+}
+
 export async function runAccount(client: SoniloClient): Promise<void> {
-  printJson(await client.account.services());
+  const services = await client.account.services();
+  printJson(services);
+  // stdout stays pure JSON so `sonilo account | jq` keeps working; the
+  // human-readable summary goes to stderr.
+  const summary = formatTrialSummary(services.trial);
+  if (summary !== undefined) console.error(summary);
 }
 
 export async function runUsage(client: SoniloClient, days: string | undefined): Promise<void> {

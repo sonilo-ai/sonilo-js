@@ -323,6 +323,11 @@ first one. This is deliberate: dubbing charges `video_duration ×
 number_of_languages`, so a single "free" run could easily cost more than the
 free allowance on every other endpoint combined.
 
+The table above is the current default. Read the live numbers from
+`account.services()` rather than hard-coding them — see
+[Account](#account) below, and [Errors](#errors) for what a spent trial
+looks like at the call site.
+
 ## Account
 
 ```ts
@@ -330,10 +335,27 @@ const services = await sonilo.account.services();
 const usage = await sonilo.account.usage({ days: 7 });
 ```
 
+`services.trial` reports the free-trial allowance per service, so an
+integration can degrade gracefully *before* a call fails:
+
+```ts
+const { trial } = await sonilo.account.services();
+const quota = trial?.text_to_music;
+if (quota && quota.remaining === 0) {
+  // Prompt for a payment method instead of firing a call that will 402.
+  console.log(`Free trial spent (${quota.used}/${quota.granted}).`);
+}
+```
+
+`trial` is present only for self-serve accounts, so always treat it as
+optional; a service missing from the map has no trial allowance rather than
+an unlimited one.
+
 ## Errors
 
 All errors extend `SoniloError`: `AuthenticationError` (401),
-`PaymentRequiredError` (402), `RateLimitError` (429, `.retryAfter`),
+`PaymentRequiredError` (402), `TrialExhaustedError` (402, a subclass of
+`PaymentRequiredError`), `RateLimitError` (429, `.retryAfter`),
 `BadRequestError` (400/413/422, `.detail`), `APIError` (anything else),
 `GenerationError` for failures mid-stream, `TaskFailedError` (`.code`,
 `.taskId`, `.refunded`) for a failed SFX task, `TaskTimeoutError`
@@ -347,3 +369,29 @@ Every `APIError` also carries `.status`, `.body` (the parsed response),
 `.code` (the API's error code, e.g. `"rate_limit_exceeded"`), and `.errors`
 (the validation detail array on a 422), in addition to any subclass-specific
 properties above.
+
+### The three 402s
+
+A `402` is not one condition. Branch on the class (or equivalently on
+`.code`), never on the message text:
+
+```ts
+try {
+  await sonilo.textToMusic.generate({ prompt: "lofi", duration: 30 });
+} catch (err) {
+  if (err instanceof TrialExhaustedError) {
+    // code: "trial_exhausted" — the free trial for this service is spent and
+    // the account has never been funded. Prompt for a payment method; a retry
+    // can never succeed.
+  } else if (err instanceof PaymentRequiredError) {
+    // code: "insufficient_balance" — a funded wallet ran dry. Add balance and
+    // retry the same request.
+    // code: "payment_required" — anything else, e.g. a suspended account.
+  }
+}
+```
+
+`TrialExhaustedError` extends `PaymentRequiredError`, so an existing
+`catch (err) { if (err instanceof PaymentRequiredError) ... }` keeps
+catching every 402 — order the checks most-specific-first if you want to
+tell them apart.

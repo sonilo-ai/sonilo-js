@@ -68,6 +68,20 @@ task and polls it instead of streaming the response — matching how the
 underlying [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
 `mode: "async"` for those options.
 
+## Free trial
+
+`sonilo account` prints the account JSON on stdout and, when the account has
+a free-trial allowance, one summary line on stderr:
+
+```
+Free trial: text-to-music 1/2 left, video-to-music 0/1 left
+```
+
+Because the summary goes to stderr, `sonilo account | jq .trial` still sees
+clean JSON. Once a service shows `0` left, calls to it fail with
+`HTTP 402: ... (trial_exhausted)` until a payment method is added — that is
+the only 402 a retry can never fix.
+
 ## Programmatic use
 
 This package is a thin CLI wrapper. For direct API access from Node.js or the

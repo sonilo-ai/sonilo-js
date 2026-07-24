@@ -129,6 +129,8 @@ export interface VideoToMusicParams {
   ducking?: boolean;
 }
 
+/** One service's free-trial allowance. `remaining` is already floored at 0,
+ * so it is safe to compare directly. */
 export interface TrialQuota {
   granted: number;
   used: number;
@@ -141,8 +143,10 @@ export interface AccountServices {
   concurrency_limit: number;
   discount_factor: number | string;
   max_upload_size_mb: number | null;
-  /** Free-trial allowance keyed by service. Returned only for self-serve
-   * accounts; absent entirely for invoiced accounts. */
+  /** Free-trial allowance keyed by service (`granted` / `used` /
+   * `remaining`). Present only for self-serve accounts — always treat it as
+   * possibly absent, and treat a service missing from the map as "no trial
+   * allowance", not as an error. */
   trial?: Record<string, TrialQuota>;
 }
 
