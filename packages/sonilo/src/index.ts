@@ -40,6 +40,7 @@ export type {
   TextToSfxParams,
   TitleEvent,
   Track,
+  TrialQuota,
   UnknownEvent,
   UsageResponse,
   UsageSummary,
