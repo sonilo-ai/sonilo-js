@@ -84,6 +84,12 @@ dubbing options (async-only):
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
                           Default: ./output.mp4
+  --timeout <ms>          How long to wait for the task. Default: 3600000
+                          (1 hour; the backend itself keeps trying for up to
+                          2 hours). If the wait times out, the task is still
+                          running — resume waiting on it with
+                          "sonilo tasks wait <task-id>" using the task id
+                          printed in the "Submitted task ..." line.
   Max video duration is 180 seconds. You are billed per language.
 
 Global options:
@@ -406,9 +412,22 @@ export function languageOutputPath(template: string, language: string): string {
   return `${template}.${language}.mp4`;
 }
 
+/** Default wait timeout for `sonilo dubbing`, in milliseconds.
+ *
+ * The dubbing backend polls its own pipeline for up to 7200000 ms (2 hours)
+ * before giving up server-side. The SDK's generic default
+ * (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is far too short for this endpoint:
+ * a 180-second video dubbed into several languages routinely takes longer
+ * than 10 minutes, so using the generic default would make the CLI throw
+ * `TaskTimeoutError` and exit non-zero on runs that are still succeeding
+ * server-side. 1 hour is a more realistic default while staying well under
+ * the backend's own 2-hour ceiling; `--timeout` overrides it. */
+export const DUBBING_WAIT_TIMEOUT_MS = 3_600_000;
+
 export function parseDubbingArgs(argv: string[]): {
   params: DubbingParams;
   output: string | undefined;
+  timeout: number | undefined;
 } {
   const { values } = parseArgs({
     args: argv,
@@ -417,6 +436,7 @@ export function parseDubbingArgs(argv: string[]): {
       "video-url": { type: "string" },
       languages: { type: "string" },
       output: { type: "string" },
+      timeout: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -439,14 +459,17 @@ export function parseDubbingArgs(argv: string[]): {
       languages,
     },
     output: values.output,
+    timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
   };
 }
 
 export async function runDubbing(client: SoniloClient, argv: string[]): Promise<void> {
-  const { params, output } = parseDubbingArgs(argv);
+  const { params, output, timeout } = parseDubbingArgs(argv);
   const task = await client.dubbing.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
-  const result = await client.tasks.wait<DubbingResult>(task.task_id);
+  const result = await client.tasks.wait<DubbingResult>(task.task_id, {
+    timeout: timeout ?? DUBBING_WAIT_TIMEOUT_MS,
+  });
   const outputs = result.outputs ?? {};
   const languages = Object.keys(outputs).sort();
   if (languages.length === 0) fail("task succeeded but returned no dubbed videos");

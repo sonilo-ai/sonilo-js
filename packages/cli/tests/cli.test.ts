@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
 import {
+  DUBBING_WAIT_TIMEOUT_MS,
   extFromUrl,
   extractApiKey,
   languageOutputPath,
@@ -190,6 +191,16 @@ describe("parseDubbingArgs", () => {
     const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
     expect(params.languages).toBeUndefined();
   });
+
+  it("parses --timeout as a number", () => {
+    const { timeout } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--timeout", "5000"]);
+    expect(timeout).toBe(5000);
+  });
+
+  it("leaves timeout undefined when the flag is absent", () => {
+    const { timeout } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(timeout).toBeUndefined();
+  });
 });
 
 describe("runDubbing", () => {
@@ -223,6 +234,11 @@ describe("runDubbing", () => {
     );
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
+    // `vi.restoreAllMocks()` in afterEach does not reset a vi.mock-factory
+    // vi.fn like `writeFile` — its call history accumulates across tests in
+    // this file, so clear it here or `toContain` below could pass even if
+    // the function wrote extra, unwanted files.
+    vi.mocked(writeFile).mockClear();
 
     await runDubbing(client, [
       "--video-url",
@@ -235,6 +251,7 @@ describe("runDubbing", () => {
 
     expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/dubbing");
     const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toHaveLength(2);
     expect(written).toContain("out/clip.es.mp4");
     expect(written).toContain("out/clip.fr.mp4");
   });
@@ -247,6 +264,53 @@ describe("runDubbing", () => {
     });
 
     await expect(runDubbing(client, ["--languages", "es"])).rejects.toThrow("process.exit");
+  });
+
+  it("waits with the dubbing-specific default timeout when --timeout is not given", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing") ? json({ task_id: "db2", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "db2",
+      status: "succeeded",
+      outputs: { es: "https://cdn.example.com/es.mp4" },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+
+    expect(waitSpy).toHaveBeenCalledWith("db2", { timeout: DUBBING_WAIT_TIMEOUT_MS });
+  });
+
+  it("parses --timeout and forwards it to tasks.wait, overriding the default", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing") ? json({ task_id: "db3", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "db3",
+      status: "succeeded",
+      outputs: { es: "https://cdn.example.com/es.mp4" },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--timeout",
+      "5000",
+    ]);
+
+    expect(waitSpy).toHaveBeenCalledWith("db3", { timeout: 5000 });
   });
 });
 

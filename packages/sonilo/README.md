@@ -182,13 +182,33 @@ languages in a single async call — one call, one task, one dubbed video per
 language.
 
 ```ts
-const result = await client.dubbing.generate({
+import { SoniloClient } from "sonilo";
+import type { DubbingResult } from "sonilo";
+
+const client = new SoniloClient();
+
+const task = await client.dubbing.submit({
   videoUrl: "https://example.com/clip.mp4",
   languages: ["es", "fr"],
 });
+const result = await client.tasks.wait<DubbingResult>(task.task_id);
 for (const [language, url] of Object.entries(result.outputs ?? {})) {
   console.log(language, url);
 }
+```
+
+`generate()` wraps submit + poll, same as the other async endpoints, and
+accepts a `{ timeout }` option to override the default 10-minute wait — the
+dubbing pipeline can take much longer than that, especially with several
+languages, so pass a longer timeout (or use `submit()` +
+`client.tasks.wait()` yourself, as above) for anything but the shortest
+clips:
+
+```ts
+const result = await client.dubbing.generate(
+  { videoUrl: "https://example.com/clip.mp4", languages: ["es", "fr"] },
+  { timeout: 3_600_000 }, // 1 hour
+);
 ```
 
 Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
@@ -197,7 +217,9 @@ optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
 codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`.
 
 Dubbing is async-only, and the source video may be at most 180 seconds long.
-You are billed per language.
+You are billed per language. Dubbing has **no free trial allowance** — unlike
+every other endpoint, every call bills from the first one (see
+[Free trial](#free-trial)).
 
 The result is a `DubbingResult`, whose `outputs` is a map of language code to
 dubbed `.mp4` URL — not the `audio`/`video`/`output_url` shape the other
@@ -286,15 +308,20 @@ are presigned and expire; download promptly or re-fetch via `tasks.get`.
 
 ## Free trial
 
-Accounts created through self-serve signup start with free runs on every
-endpoint — no card required:
+Accounts created through self-serve signup start with free runs on most
+endpoints — no card required:
 
 | Free runs | Endpoints |
 | --- | --- |
 | 2 each | text-to-music, text-to-sfx, audio-ducking |
 | 1 each | video-to-music, video-to-sfx, video-to-video-music, video-to-video-sfx, video-to-sound, video-to-video-sound |
+| 0 | dubbing |
 
 Once an endpoint's free runs are used up, calls to it bill at the normal rate.
+**Dubbing has no free trial allowance at all** — it bills every call from the
+first one. This is deliberate: dubbing charges `video_duration ×
+number_of_languages`, so a single "free" run could easily cost more than the
+free allowance on every other endpoint combined.
 
 ## Account
 
