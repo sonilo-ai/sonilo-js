@@ -60,8 +60,21 @@ sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 
 Run `sonilo --help` for the full option list, including `--isolate-vocals` /
 `--preserve-speech` for `video-to-music`, `--music-prompt` / `--sfx-prompt` /
-`--no-ducking` for the `video-to-sound` commands, and the `--format` options
-each command accepts.
+`--no-ducking` for the `video-to-sound` commands, `--languages` / `--timeout`
+for `dubbing`, and the `--format` options each command accepts.
+
+`dubbing` differs from the other commands in three ways worth knowing before
+you run it:
+
+- `--output` is a filename **template**, not a single destination: a dubbing
+  task returns one video per language, so `--output clip.mp4` writes
+  `clip.es.mp4`, `clip.fr.mp4`, and so on.
+- Billing is **per language** — a three-language call costs three times a
+  one-language call — and `dubbing` has **no free trial runs** at all (see
+  [Free trial](#free-trial) below).
+- `--timeout` defaults to 7200000 ms (2 hours), matching the backend's own
+  ceiling for a dubbing job. If the wait still times out the task keeps
+  running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
 `--format wav` (or `--isolate-vocals` / `--preserve-speech`) submits an async
 task and polls it instead of streaming the response — matching how the
@@ -81,6 +94,11 @@ Because the summary goes to stderr, `sonilo account | jq .trial` still sees
 clean JSON. Once a service shows `0` left, calls to it fail with
 `HTTP 402: ... (trial_exhausted)` until a payment method is added — that is
 the only 402 a retry can never fix.
+
+**`dubbing` never appears in that summary: it has zero free runs and bills
+from the very first call.** This is deliberate — dubbing charges `video
+duration × number of languages`, so a single free run on it would be worth
+far more than the free allowance on every other command combined.
 
 ## Programmatic use
 
