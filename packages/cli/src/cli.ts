@@ -7,6 +7,8 @@ import {
   SoniloClient,
   SoniloError,
   download,
+  type DubbingParams,
+  type DubbingResult,
   type MusicTaskResult,
   type SfxResult,
   type SoundResult,
@@ -29,6 +31,7 @@ Commands:
   video-to-sfx                  Generate a sound effect matched to a video
   video-to-sound                Generate a combined music + SFX track for a video
   video-to-video-sound          Same as video-to-sound, muxed back into the video
+  dubbing                       Dub a video into other languages
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
                                 (--poll-interval <ms>, --timeout <ms>)
@@ -72,6 +75,23 @@ video-to-sound / video-to-video-sound options (both async-only):
   --no-ducking            Disable ducking (music is ducked under speech by default).
   --output <path>         Where to save the result (default: ./output.<ext>)
 
+dubbing options (async-only):
+  --video <path>         Required (or --video-url). Local file to dub.
+  --video-url <url>      Required (or --video). Must be an https URL.
+  --languages <list>      Comma-separated target languages. Default: zh_cn,es,fr
+                          Supported: en, zh_cn, ja, ko, pt, es, de, fr, it, ru
+  --output <path>         Filename template. One file is written per language,
+                          with the code inserted before the extension:
+                          --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
+                          Default: ./output.mp4
+  --timeout <ms>          How long to wait for the task. Default: 3600000
+                          (1 hour; the backend itself keeps trying for up to
+                          2 hours). If the wait times out, the task is still
+                          running — resume waiting on it with
+                          "sonilo tasks wait <task-id>" using the task id
+                          printed in the "Submitted task ..." line.
+  Max video duration is 180 seconds. You are billed per language.
+
 Global options:
   --api-key <key>   Overrides the SONILO_API_KEY environment variable.
   --help             Show this help and exit.
@@ -86,6 +106,7 @@ Examples:
   sonilo text-to-music --prompt "warm lo-fi piano, rain in the background" --duration 30
   sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
   sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
+  sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
   sonilo tasks get 9f5f2f7e-...
 `;
 
@@ -376,6 +397,89 @@ export async function runVideoToVideoSound(client: SoniloClient, argv: string[])
   await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
 }
 
+/** Turn one `--output` value into a per-language path: `clip.mp4` + `es`
+ * becomes `clip.es.mp4`. A dubbing task returns one video per language, so a
+ * single literal destination cannot express the result; this mirrors the
+ * Python CLI's `--stem` naming so both tools read the same way. The extension
+ * search stops at the last path separator so a dot in a directory name (e.g.
+ * `v1.2/clip`) is never mistaken for a file extension. */
+export function languageOutputPath(template: string, language: string): string {
+  const dot = template.lastIndexOf(".");
+  const slash = Math.max(template.lastIndexOf("/"), template.lastIndexOf("\\"));
+  if (dot > slash + 1) {
+    return `${template.slice(0, dot)}.${language}${template.slice(dot)}`;
+  }
+  return `${template}.${language}.mp4`;
+}
+
+/** Default wait timeout for `sonilo dubbing`, in milliseconds.
+ *
+ * The dubbing backend polls its own pipeline for up to 7200000 ms (2 hours)
+ * before giving up server-side. The SDK's generic default
+ * (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is far too short for this endpoint:
+ * a 180-second video dubbed into several languages routinely takes longer
+ * than 10 minutes, so using the generic default would make the CLI throw
+ * `TaskTimeoutError` and exit non-zero on runs that are still succeeding
+ * server-side. 1 hour is a more realistic default while staying well under
+ * the backend's own 2-hour ceiling; `--timeout` overrides it. */
+export const DUBBING_WAIT_TIMEOUT_MS = 3_600_000;
+
+export function parseDubbingArgs(argv: string[]): {
+  params: DubbingParams;
+  output: string | undefined;
+  timeout: number | undefined;
+} {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      languages: { type: "string" },
+      output: { type: "string" },
+      timeout: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  let languages: string[] | undefined;
+  if (values.languages !== undefined) {
+    languages = values.languages
+      .split(",")
+      .map((code) => code.trim())
+      .filter((code) => code.length > 0);
+    if (languages.length === 0) {
+      fail("--languages needs at least one language code, e.g. --languages es,fr");
+    }
+  }
+  return {
+    params: {
+      video: values.video,
+      videoUrl: values["video-url"],
+      languages,
+    },
+    output: values.output,
+    timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
+  };
+}
+
+export async function runDubbing(client: SoniloClient, argv: string[]): Promise<void> {
+  const { params, output, timeout } = parseDubbingArgs(argv);
+  const task = await client.dubbing.submit(params);
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<DubbingResult>(task.task_id, {
+    timeout: timeout ?? DUBBING_WAIT_TIMEOUT_MS,
+  });
+  const outputs = result.outputs ?? {};
+  const languages = Object.keys(outputs).sort();
+  if (languages.length === 0) fail("task succeeded but returned no dubbed videos");
+  const template = outputPath(output, "mp4");
+  for (const language of languages) {
+    const url = outputs[language]!;
+    await writeAudio(await download(url), languageOutputPath(template, language));
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version")) {
@@ -401,6 +505,7 @@ async function main(): Promise<void> {
     "video-to-sfx",
     "video-to-sound",
     "video-to-video-sound",
+    "dubbing",
     "tasks",
   ]);
   if (!KNOWN_COMMANDS.has(command ?? "")) {
@@ -427,6 +532,8 @@ async function main(): Promise<void> {
       return runVideoToSound(client, commandArgs);
     case "video-to-video-sound":
       return runVideoToVideoSound(client, commandArgs);
+    case "dubbing":
+      return runDubbing(client, commandArgs);
     case "tasks": {
       const [subcommand, taskId, ...taskArgs] = commandArgs;
       if (subcommand === "get") return runTasksGet(client, taskId);
