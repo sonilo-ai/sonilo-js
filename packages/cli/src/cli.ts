@@ -89,6 +89,13 @@ video-to-sound / video-to-video-sound options (both async-only):
   --output <path>         Where to save the result (default: ./output.<ext>)
   --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
                           (see "Segments" below)
+  --stem <name>           Also save one stem, in addition to the combined
+                          output. Repeatable. One of: music, music_processed,
+                          sfx. music_processed exists only when
+                          --preserve-speech or ducking altered the music bed.
+                          Named <output> with ".<stem>" inserted before the
+                          extension: --output mix.wav --stem music writes
+                          mix.wav and mix.music.wav.
 
 video-to-video-music options (async-only, writes a video):
   --video <path>         Required (or --video-url). Local file to score.
@@ -351,6 +358,27 @@ export function extractApiKey(argv: string[]): {
   return { apiKeyFlag: argv[i + 1], rest: argv.slice(0, i).concat(argv.slice(i + 2)) };
 }
 
+/** The individual stems `video-to-sound` / `video-to-video-sound` can save
+ * alongside their combined output, matching `SoundResult` in
+ * packages/sonilo/src/types.ts and the Python CLI's `--stem` exactly.
+ * `music_processed` is the odd one out: it only exists on a result when
+ * `preserveSpeech` or `ducking` actually altered the music bed. */
+export const SOUND_STEMS = ["music", "music_processed", "sfx"] as const;
+export type SoundStem = (typeof SOUND_STEMS)[number];
+
+/** Validate `--stem` values against the allowed set, failing loudly (naming
+ * the valid ones) on the first one that is not recognized — mirrors
+ * `parseFormat`'s handling of an unsupported `--format`. */
+export function parseStems(values: string[] | undefined): SoundStem[] {
+  if (!values) return [];
+  for (const value of values) {
+    if (!(SOUND_STEMS as readonly string[]).includes(value)) {
+      fail(`invalid --stem "${value}". Allowed: ${SOUND_STEMS.join(", ")}`);
+    }
+  }
+  return values as SoundStem[];
+}
+
 /** Best-effort file extension from a (presigned) result URL, ignoring query
  * strings, falling back when the path carries no extension. */
 export function extFromUrl(url: string, fallback: string): string {
@@ -362,6 +390,26 @@ export function extFromUrl(url: string, fallback: string): string {
     // not a parseable URL — fall through to the fallback
   }
   return fallback;
+}
+
+/** Turn the resolved `--output` path into a path for one stem: the stem name
+ * is inserted before the extension, and the extension itself is taken from
+ * the stem's own result URL — falling back to the main output's extension
+ * when the stem URL has none. `--output mix.wav` + stem "music" whose URL
+ * ends in `.wav` writes `mix.music.wav`; if that URL had no extension it
+ * would still write `mix.music.wav`, borrowing the main output's `.wav`.
+ * Mirrors the Python CLI's `_stem_path` (sonilo_cli/__main__.py) exactly, so
+ * both tools name stem files the same way. The extension search stops at the
+ * last path separator, same as `languageOutputPath`, so a dot in a directory
+ * name is never mistaken for a file extension. */
+export function stemOutputPath(output: string, stem: string, stemUrl: string): string {
+  const dot = output.lastIndexOf(".");
+  const slash = Math.max(output.lastIndexOf("/"), output.lastIndexOf("\\"));
+  const hasExt = dot > slash + 1;
+  const base = hasExt ? output.slice(0, dot) : output;
+  const mainExt = hasExt ? output.slice(dot + 1) : "";
+  const ext = extFromUrl(stemUrl, mainExt);
+  return ext ? `${base}.${stem}.${ext}` : `${base}.${stem}`;
 }
 
 async function writeAudio(bytes: Uint8Array, path: string): Promise<void> {
@@ -599,6 +647,7 @@ async function parseSoundArgs(
 ): Promise<{
   params: VideoToSoundParams;
   output: string | undefined;
+  stems: SoundStem[];
 }> {
   const { values } = parseArgs({
     args: argv,
@@ -611,6 +660,7 @@ async function parseSoundArgs(
       "no-ducking": { type: "boolean" },
       output: { type: "string" },
       segments: { type: "string" },
+      stem: { type: "string", multiple: true },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -630,27 +680,58 @@ async function parseSoundArgs(
       segments,
     },
     output: values.output,
+    stems: parseStems(values.stem),
   };
 }
 
+/** Write each `--stem` file requested for a combined sound result, in
+ * addition to (never instead of) the combined output already written to
+ * `mainOutput`. A stem the result does not carry — most commonly
+ * `music_processed`, which only exists when `preserveSpeech` or `ducking`
+ * actually altered the music bed — fails loudly through the same `fail()`
+ * path as every other CLI error, rather than being skipped or writing an
+ * empty file. */
+async function writeStems(
+  command: string,
+  result: SoundResult,
+  stems: SoundStem[],
+  mainOutput: string,
+): Promise<void> {
+  for (const stem of stems) {
+    const media = result[stem];
+    if (!media) {
+      const reason =
+        stem === "music_processed"
+          ? " — it only exists when --preserve-speech or ducking actually altered the music bed"
+          : "";
+      fail(`${command}: no "${stem}" stem on this result (status: ${result.status})${reason}`);
+    }
+    await writeAudio(await download(media), stemOutputPath(mainOutput, stem, media.url));
+  }
+}
+
 export async function runVideoToSound(client: SoniloClient, argv: string[]): Promise<void> {
-  const { params, output } = await parseSoundArgs("video-to-sound", argv);
+  const { params, output, stems } = await parseSoundArgs("video-to-sound", argv);
   const task = await client.videoToSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
   const url = result.output_url ?? result.sfx?.url ?? result.music?.url;
   if (!url) fail("task succeeded but returned no output");
-  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "wav")));
+  const mainOutput = outputPath(output, extFromUrl(url, "wav"));
+  await writeAudio(await download(url), mainOutput);
+  await writeStems("video-to-sound", result, stems, mainOutput);
 }
 
 export async function runVideoToVideoSound(client: SoniloClient, argv: string[]): Promise<void> {
-  const { params, output } = await parseSoundArgs("video-to-video-sound", argv);
+  const { params, output, stems } = await parseSoundArgs("video-to-video-sound", argv);
   const task = await client.videoToVideoSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
   const url = result.output_url;
   if (!url) fail("task succeeded but returned no output video");
-  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
+  const mainOutput = outputPath(output, extFromUrl(url, "mp4"));
+  await writeAudio(await download(url), mainOutput);
+  await writeStems("video-to-video-sound", result, stems, mainOutput);
 }
 
 /** Shared tail of `video-to-video-music` / `video-to-video-sfx`: announce the
