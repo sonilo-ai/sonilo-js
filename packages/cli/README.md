@@ -54,6 +54,12 @@ sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prom
 # Same, but muxed back into the video
 sonilo video-to-video-sound --video clip.mp4 --sfx-prompt "footsteps" --output scored.mp4
 
+# Score a video and get the video back with the music muxed in (async only)
+sonilo video-to-video-music --video clip.mp4 --prompt "tense, driving synths" --output scored.mp4
+
+# Add sound effects and get the video back with them muxed in (async only)
+sonilo video-to-video-sfx --video clip.mp4 --prompt "footsteps, distant thunder" --output foley.mp4
+
 # Dub a video into other languages (async only, one file per language)
 sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
 
@@ -62,16 +68,26 @@ sonilo tasks get <task-id>
 sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 ```
 
-Run `sonilo --help` for the full option list, including `--isolate-vocals` /
-`--preserve-speech` for `video-to-music`, `--music-prompt` / `--sfx-prompt` /
+Run `sonilo --help` for the full option list, including `--preserve-speech` for
+`video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
 `--no-ducking` for the `video-to-sound` commands, `--languages` / `--timeout`
 for `dubbing`, and the `--format` options each command accepts.
 
+`--isolate-vocals` is a legacy alias for `--preserve-speech`, not a second
+option: the API accepts either name and ORs them into one behaviour, so passing
+both is the same as passing one.
+
+The four video-out commands — `video-to-video-sound`, `video-to-video-music`,
+`video-to-video-sfx` and `dubbing` — write a video rather than an audio file,
+so they take no `--format` and default `--output` to `./output.mp4`. All of
+them are async only: the CLI submits the task, prints its id, and polls until
+it finishes.
+
 ## Segments
 
-`text-to-music`, `video-to-music`, `video-to-sfx`, `video-to-sound` and
-`video-to-video-sound` accept `--segments`, a JSON array of per-segment
-prompts, in three forms — the curl / gh / aws convention:
+`text-to-music`, `video-to-music`, `video-to-sfx`, `video-to-video-sfx`,
+`video-to-sound` and `video-to-video-sound` accept `--segments`, a JSON array
+of per-segment prompts, in three forms — the curl / gh / aws convention:
 
 ```bash
 --segments '[{"start":0,"prompt":"airy pads","label":"intro"}]'   # inline JSON
@@ -84,8 +100,8 @@ anything else is parsed as JSON directly. The required fields differ by
 command:
 
 - `text-to-music` / `video-to-music` take `{start, prompt, label?}`.
-- `video-to-sfx` / `video-to-sound` / `video-to-video-sound` take
-  `{start, end, prompt}`.
+- `video-to-sfx` / `video-to-video-sfx` / `video-to-sound` /
+  `video-to-video-sound` take `{start, end, prompt}`.
 
 The CLI only checks this shape — that the value is valid JSON, a non-empty
 array of objects, and each object carries the right fields with the right
@@ -110,7 +126,7 @@ you run it:
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
-`--format wav` (or `--isolate-vocals` / `--preserve-speech`) submits an async
+`--format wav` (or `--preserve-speech` / `--isolate-vocals`) submits an async
 task and polls it instead of streaming the response — matching how the
 underlying [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
 `mode: "async"` for those options.
