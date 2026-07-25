@@ -1,5 +1,41 @@
 # sonilo-cli
 
+## 0.5.0
+
+### Minor Changes
+
+- f3e6785: Add the `video-to-video-music` and `video-to-video-sfx` commands, closing the
+  last gap between the API's generation endpoints and the CLI. Both are async
+  only and write a video: they submit the task, poll it, and save the re-hosted
+  result (default `./output.mp4`). `video-to-video-music` takes `--prompt`,
+  `--preserve-speech` and the legacy `--isolate-vocals`; `video-to-video-sfx`
+  takes `--prompt` and `--segments` with the SFX shape `{start, end, prompt}`.
+
+  Also fix the `video-to-music` help text, which listed `--isolate-vocals` and
+  `--preserve-speech` as two independent options and described the former as
+  splitting out a "vocals-only stem". They are one feature under two names — the
+  API accepts either and ORs them — and this command writes only the main audio
+  track, so `--isolate-vocals` is now documented as a legacy alias for
+  `--preserve-speech` and no longer advertises a stem the CLI cannot hand back.
+
+- f4b74b2: Add `--stem <name>` to `video-to-sound` and `video-to-video-sound`, matching
+  the Python CLI. `video-to-sound` and `video-to-video-sound` return a combined
+  render plus three individual layers (`music`, `music_processed`, `sfx`); the
+  Node CLI previously wrote only the combined output and silently discarded the
+  rest.
+
+  `--stem` is repeatable — pass it once per layer you want saved — and each
+  requested stem is written in addition to the combined output, never instead
+  of it. The stem file is named from `--output` with `.<stem>` inserted before
+  the extension, and that extension is taken from the stem's own result URL
+  (falling back to the main output's extension when the stem URL has none):
+  `--output mix.wav --stem music` writes `mix.wav` plus `mix.music.wav`.
+
+  `music_processed` only exists on a result when `--preserve-speech` or
+  ducking actually altered the music bed. Requesting it (or any other stem)
+  when the result does not carry it now fails with a clear error naming the
+  missing stem, instead of writing an empty file or exiting silently.
+
 ## 0.4.0
 
 ### Minor Changes
