@@ -68,11 +68,14 @@ sonilo tasks get <task-id>
 sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 ```
 
-Run `sonilo --help` for the full option list, including `--isolate-vocals` /
-`--preserve-speech` for `video-to-music` and `video-to-video-music`,
-`--music-prompt` / `--sfx-prompt` / `--no-ducking` for the `video-to-sound`
-commands, `--languages` / `--timeout` for `dubbing`, and the `--format` options
-each command accepts.
+Run `sonilo --help` for the full option list, including `--preserve-speech` for
+`video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
+`--no-ducking` for the `video-to-sound` commands, `--languages` / `--timeout`
+for `dubbing`, and the `--format` options each command accepts.
+
+`--isolate-vocals` is a legacy alias for `--preserve-speech`, not a second
+option: the API accepts either name and ORs them into one behaviour, so passing
+both is the same as passing one.
 
 The four video-out commands — `video-to-video-sound`, `video-to-video-music`,
 `video-to-video-sfx` and `dubbing` — write a video rather than an audio file,
@@ -123,7 +126,7 @@ you run it:
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
-`--format wav` (or `--isolate-vocals` / `--preserve-speech`) submits an async
+`--format wav` (or `--preserve-speech` / `--isolate-vocals`) submits an async
 task and polls it instead of streaming the response — matching how the
 underlying [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
 `mode: "async"` for those options.

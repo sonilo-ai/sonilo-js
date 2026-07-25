@@ -58,8 +58,8 @@ video-to-music options:
   --prompt <text>              Optional creative direction for the music.
   --output <path>              Where to save the audio (default: ./output.<ext>)
   --format <m4a|wav>           Output container. wav forces --async.
-  --isolate-vocals              Split out a vocals-only stem. Forces --async.
   --preserve-speech             Keep source speech in the mix. Forces --async.
+  --isolate-vocals              Legacy alias for --preserve-speech. Forces --async.
   --async                       Submit and poll instead of streaming
   --segments <json>             Per-segment prompts: [{start, prompt, label?}, ...]
                                 (see "Segments" below)
@@ -490,6 +490,13 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
     fail("pass exactly one of --video or --video-url");
   }
   const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
+  // --isolate-vocals and --preserve-speech are ONE feature under two names, not
+  // two independent options: the backend ORs them and normalizes onto a single
+  // flag (preserve_speech is the current public name, isolate_vocals the legacy
+  // field still sent by existing callers). Either one forces async, and either
+  // one makes the task carry `vocals`/`mux` entries — but this command writes
+  // only `audio[0]`, and the CLI has no --stem to fetch the rest, so the help
+  // must not advertise a stem it cannot hand back. See the help text above.
   const isolateVocals = values["isolate-vocals"] === true;
   const preserveSpeech = values["preserve-speech"] === true;
   const useAsync =

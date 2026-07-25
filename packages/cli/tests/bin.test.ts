@@ -38,4 +38,34 @@ describe("bin entrypoint", () => {
     expect(out).toContain("sonilo");
     expect(out.length).toBeGreaterThan(100);
   });
+
+  /** Slice one "<name> options:" block out of the help text. Blocks are
+   * separated by a blank line, and the leading newline anchors the heading so
+   * "video-to-music" cannot match inside "video-to-video-music". */
+  function optionBlock(help: string, command: string): string {
+    const start = help.indexOf(`\n${command} options`);
+    expect(start).toBeGreaterThan(-1);
+    const end = help.indexOf("\n\n", start + 1);
+    return help.slice(start, end === -1 ? undefined : end);
+  }
+
+  // --isolate-vocals and --preserve-speech are one feature under two names --
+  // the backend ORs them onto a single flag (video_to_music router) -- and this
+  // CLI writes only audio[0], exposing no --stem for the vocals/mux entries the
+  // task carries. The help used to describe them as two independent options, one
+  // of which promised "a vocals-only stem" the CLI cannot hand back. Pin the
+  // wording so that cannot come back, and keep it matching the Python CLI's.
+  it("presents --isolate-vocals as a legacy alias, promising no stem", () => {
+    const out = execFileSync("node", [BIN, "--help"], { encoding: "utf8" });
+
+    const music = optionBlock(out, "video-to-music");
+    expect(music).toContain("--preserve-speech");
+    expect(music).toContain("--isolate-vocals");
+    expect(music).toContain("Legacy alias for --preserve-speech");
+    expect(music).not.toContain("stem");
+
+    const videoMusic = optionBlock(out, "video-to-video-music");
+    expect(videoMusic).toContain("Legacy alias for --preserve-speech");
+    expect(videoMusic).not.toContain("stem");
+  });
 });
