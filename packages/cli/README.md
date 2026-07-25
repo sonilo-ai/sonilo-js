@@ -51,6 +51,9 @@ sonilo video-to-sfx --video clip.mp4 --output foley.wav
 # Generate a combined music + SFX track for a video (async only)
 sonilo video-to-sound --video clip.mp4 --music-prompt "tense strings" --sfx-prompt "footsteps, distant thunder" --output mix.wav
 
+# Same, but also save the individual music and SFX stems (repeatable --stem)
+sonilo video-to-sound --video clip.mp4 --sfx-prompt "footsteps" --output mix.wav --stem music --stem sfx
+
 # Same, but muxed back into the video
 sonilo video-to-video-sound --video clip.mp4 --sfx-prompt "footsteps" --output scored.mp4
 
@@ -70,8 +73,27 @@ sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 
 Run `sonilo --help` for the full option list, including `--preserve-speech` for
 `video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
-`--no-ducking` for the `video-to-sound` commands, `--languages` / `--timeout`
-for `dubbing`, and the `--format` options each command accepts.
+`--no-ducking` / `--stem` for the `video-to-sound` commands, `--languages` /
+`--timeout` for `dubbing`, and the `--format` options each command accepts.
+
+`video-to-sound` and `video-to-video-sound` return a combined render plus
+three individual layers — `music`, `music_processed`, and `sfx`. `--stem` (one
+of those three names) saves a layer alongside the combined output instead of
+discarding it; pass it more than once to save several. The file is named from
+`--output` with the stem inserted before the extension, and the extension
+itself comes from that stem's own result — not necessarily the same container
+as the combined output:
+
+```bash
+sonilo video-to-sound --video clip.mp4 --output mix.wav --stem music --stem sfx
+# writes mix.wav (combined), plus mix.music.<ext> and mix.sfx.<ext>,
+# each <ext> taken from that stem's own file (falls back to .wav when the
+# stem's URL carries no extension of its own)
+```
+
+`music_processed` only exists on the result when `--preserve-speech` or
+ducking actually altered the music bed; requesting it when the result doesn't
+carry it fails with a clear error rather than writing an empty file.
 
 `--isolate-vocals` is a legacy alias for `--preserve-speech`, not a second
 option: the API accepts either name and ORs them into one behaviour, so passing

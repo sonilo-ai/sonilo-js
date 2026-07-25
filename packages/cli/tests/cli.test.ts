@@ -28,6 +28,7 @@ import {
   runVideoToVideoMusic,
   runVideoToVideoSfx,
   runVideoToVideoSound,
+  stemOutputPath,
 } from "../src/cli.js";
 import { json, mockClient } from "./helpers.js";
 
@@ -107,6 +108,34 @@ describe("extFromUrl", () => {
 
   it("falls back when the path has no extension", () => {
     expect(extFromUrl("https://cdn.example.com/a/out", "mp4")).toBe("mp4");
+  });
+});
+
+describe("stemOutputPath", () => {
+  it("inserts the stem before the extension, taken from the stem's own URL", () => {
+    expect(stemOutputPath("mix.wav", "music", "https://cdn.example.com/a/mix.music.wav")).toBe(
+      "mix.music.wav",
+    );
+  });
+
+  it("uses the stem's own extension even when it differs from the main output", () => {
+    // Matches the Python CLI reference: a .wav combined output can still have
+    // an .m4a music stem, because each stem is its own re-hosted artifact.
+    expect(stemOutputPath("mix.wav", "music", "https://cdn.example.com/a/mix.music.m4a")).toBe(
+      "mix.music.m4a",
+    );
+  });
+
+  it("falls back to the main output's extension when the stem URL has none", () => {
+    expect(stemOutputPath("mix.wav", "sfx", "https://cdn.example.com/a/mix-sfx")).toBe(
+      "mix.sfx.wav",
+    );
+  });
+
+  it("preserves a directory component without mistaking a dot in it for an extension", () => {
+    expect(
+      stemOutputPath("out/v1.2/mix.wav", "music", "https://cdn.example.com/a/x.m4a"),
+    ).toBe("out/v1.2/mix.music.m4a");
   });
 });
 
@@ -516,6 +545,142 @@ describe("runVideoToSound", () => {
     const form = calls[0]!.init.body as FormData;
     expect(form.get("segments")).toBe(JSON.stringify([{ start: 0, end: 5, prompt: "footsteps" }]));
   });
+
+  /** A succeeded video-to-sound result carrying all three stems, for the
+   * --stem tests below. `music_processed` is deliberately absent — it only
+   * exists when preserveSpeech/ducking altered the music bed, which none of
+   * these requests set. */
+  function soundResultBody(taskId: string) {
+    return json({
+      task_id: taskId,
+      status: "succeeded",
+      output_url: "https://cdn.example.com/sound.wav",
+      output_type: "audio",
+      music: { url: "https://cdn.example.com/sound.music.m4a" },
+      sfx: { url: "https://cdn.example.com/sound.sfx.wav" },
+    });
+  }
+
+  it("writes exactly one file when --stem is omitted", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "st1", status: "processing" })
+        : soundResultBody("st1"),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToSound(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+
+    expect(vi.mocked(writeFile).mock.calls).toHaveLength(1);
+  });
+
+  it("writes a requested --stem file alongside the combined output, extension taken from the stem's own URL", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "st2", status: "processing" })
+        : soundResultBody("st2"),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--output",
+      "mix.wav",
+      "--stem",
+      "music",
+    ]);
+
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    // "mix.wav" is the combined output; "mix.music.m4a" is the stem — .m4a
+    // because that is the extension on the stem's own URL, not the
+    // combined output's .wav.
+    expect(written).toEqual(["mix.wav", "mix.music.m4a"]);
+  });
+
+  it("writes one file per repeated --stem flag", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "st3", status: "processing" })
+        : soundResultBody("st3"),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--output",
+      "mix.wav",
+      "--stem",
+      "music",
+      "--stem",
+      "sfx",
+    ]);
+
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toEqual(["mix.wav", "mix.music.m4a", "mix.sfx.wav"]);
+  });
+
+  it("rejects an unrecognized --stem value, naming the valid ones", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToSound(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--stem",
+        "vocals",
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      'sonilo: invalid --stem "vocals". Allowed: music, music_processed, sfx',
+    );
+  });
+
+  it("fails clearly, not silently or with an empty file, when the requested stem is absent from the result", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "st4", status: "processing" })
+        : soundResultBody("st4"), // no music_processed
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToSound(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--stem",
+        "music_processed",
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'video-to-sound: no "music_processed" stem on this result (status: succeeded)',
+      ),
+    );
+  });
 });
 
 describe("runVideoToVideoSound", () => {
@@ -562,6 +727,38 @@ describe("runVideoToVideoSound", () => {
     expect(console.error).toHaveBeenCalledWith(
       "sonilo: video-to-video-sound segments take {start, end, prompt} — got an object with keys start, prompt, label",
     );
+  });
+
+  it("also saves --stem files, named from the combined video output", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-sound")
+        ? json({ task_id: "vst1", status: "processing" })
+        : json({
+            task_id: "vst1",
+            status: "succeeded",
+            output_url: "https://cdn.example.com/scored.mp4",
+            output_type: "video",
+            sfx: { url: "https://cdn.example.com/scored.sfx.wav" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToVideoSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--output",
+      "scored.mp4",
+      "--stem",
+      "sfx",
+    ]);
+
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toEqual(["scored.mp4", "scored.sfx.wav"]);
   });
 });
 
