@@ -13,8 +13,10 @@ import {
   type Segment,
   type SfxResult,
   type SfxSegment,
+  type SfxTask,
   type SoundResult,
   type TrialQuota,
+  type VideoResult,
   type VideoToSoundParams,
   type WaitOptions,
 } from "sonilo";
@@ -34,6 +36,8 @@ Commands:
   video-to-sfx                  Generate a sound effect matched to a video
   video-to-sound                Generate a combined music + SFX track for a video
   video-to-video-sound          Same as video-to-sound, muxed back into the video
+  video-to-video-music          Score a video and get the video back with music
+  video-to-video-sfx            Add sound effects and get the video back
   dubbing                       Dub a video into other languages
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
@@ -83,6 +87,22 @@ video-to-sound / video-to-video-sound options (both async-only):
   --preserve-speech       Keep the source speech in the result.
   --no-ducking            Disable ducking (music is ducked under speech by default).
   --output <path>         Where to save the result (default: ./output.<ext>)
+  --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
+                          (see "Segments" below)
+
+video-to-video-music options (async-only, writes a video):
+  --video <path>         Required (or --video-url). Local file to score.
+  --video-url <url>      Required (or --video). Remote video to score.
+  --prompt <text>         Optional creative direction for the music.
+  --preserve-speech       Keep the source speech in the result.
+  --isolate-vocals        Legacy alias for --preserve-speech.
+  --output <path>         Where to save the video (default: ./output.mp4)
+
+video-to-video-sfx options (async-only, writes a video):
+  --video <path>         Required (or --video-url). Local file to score.
+  --video-url <url>      Required (or --video). Remote video to score.
+  --prompt <text>         Optional creative direction for the effects.
+  --output <path>         Where to save the video (default: ./output.mp4)
   --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
                           (see "Segments" below)
 
@@ -189,8 +209,8 @@ export const MUSIC_SEGMENTS: SegmentShape = {
   optional: [{ key: "label", type: "string" }],
 };
 
-/** SFX segments: `video-to-sfx`, `video-to-sound`, `video-to-video-sound`
- * (and `video-to-video-sfx` in the SDK, which has no CLI command yet). */
+/** SFX segments: `video-to-sfx`, `video-to-video-sfx`, `video-to-sound`,
+ * `video-to-video-sound`. */
 export const SFX_SEGMENTS: SegmentShape = {
   describe: "{start, end, prompt}",
   required: [
@@ -626,6 +646,78 @@ export async function runVideoToVideoSound(client: SoniloClient, argv: string[])
   await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
 }
 
+/** Shared tail of `video-to-video-music` / `video-to-video-sfx`: announce the
+ * submitted task, poll it, and write the muxed video.
+ *
+ * These two endpoints do NOT use the flat `output_url` envelope that
+ * `video-to-video-sound` returns — their result carries the re-hosted video as
+ * a `video` media object (`VideoResult.video.url`), so the URL is read from
+ * there. The extension still comes from the URL, defaulting to mp4. */
+async function waitAndWriteVideo(
+  client: SoniloClient,
+  task: SfxTask,
+  output: string | undefined,
+): Promise<void> {
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<VideoResult>(task.task_id);
+  const url = result.video?.url;
+  if (!url) fail("task succeeded but returned no output video");
+  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
+}
+
+export async function runVideoToVideoMusic(client: SoniloClient, argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      prompt: { type: "string" },
+      "preserve-speech": { type: "boolean" },
+      "isolate-vocals": { type: "boolean" },
+      output: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  // Both booleans are sent only when set: the server ORs preserve_speech with
+  // the legacy isolate_vocals, so an explicit `false` would be noise.
+  const task = await client.videoToVideoMusic.submit({
+    video: values.video,
+    videoUrl: values["video-url"],
+    prompt: values.prompt,
+    preserveSpeech: values["preserve-speech"] === true ? true : undefined,
+    isolateVocals: values["isolate-vocals"] === true ? true : undefined,
+  });
+  await waitAndWriteVideo(client, task, values.output);
+}
+
+export async function runVideoToVideoSfx(client: SoniloClient, argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      prompt: { type: "string" },
+      output: { type: "string" },
+      segments: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  const segments = (await readSegments("video-to-video-sfx", values.segments, SFX_SEGMENTS)) as
+    | SfxSegment[]
+    | undefined;
+  const task = await client.videoToVideoSfx.submit({
+    video: values.video,
+    videoUrl: values["video-url"],
+    prompt: values.prompt,
+    segments,
+  });
+  await waitAndWriteVideo(client, task, values.output);
+}
+
 /** Turn one `--output` value into a per-language path: `clip.mp4` + `es`
  * becomes `clip.es.mp4`. A dubbing task returns one video per language, so a
  * single literal destination cannot express the result; this mirrors the
@@ -734,6 +826,8 @@ async function main(): Promise<void> {
     "video-to-sfx",
     "video-to-sound",
     "video-to-video-sound",
+    "video-to-video-music",
+    "video-to-video-sfx",
     "dubbing",
     "tasks",
   ]);
@@ -761,6 +855,10 @@ async function main(): Promise<void> {
       return runVideoToSound(client, commandArgs);
     case "video-to-video-sound":
       return runVideoToVideoSound(client, commandArgs);
+    case "video-to-video-music":
+      return runVideoToVideoMusic(client, commandArgs);
+    case "video-to-video-sfx":
+      return runVideoToVideoSfx(client, commandArgs);
     case "dubbing":
       return runDubbing(client, commandArgs);
     case "tasks": {

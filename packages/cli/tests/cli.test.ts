@@ -25,6 +25,8 @@ import {
   runVideoToMusic,
   runVideoToSfx,
   runVideoToSound,
+  runVideoToVideoMusic,
+  runVideoToVideoSfx,
   runVideoToVideoSound,
 } from "../src/cli.js";
 import { json, mockClient } from "./helpers.js";
@@ -560,6 +562,248 @@ describe("runVideoToVideoSound", () => {
     expect(console.error).toHaveBeenCalledWith(
       "sonilo: video-to-video-sound segments take {start, end, prompt} — got an object with keys start, prompt, label",
     );
+  });
+});
+
+describe("runVideoToVideoMusic", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("submits to /v1/video-to-video-music, polls, and writes the muxed video", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvm1", status: "processing" })
+        : json({
+            task_id: "vvm1",
+            status: "succeeded",
+            // Unlike video-to-video-sound, these endpoints return the result as
+            // a `video` media object rather than a flat output_url.
+            video: { url: "https://cdn.example.com/scored.mp4", content_type: "video/mp4" },
+            duration_seconds: 4,
+          }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--prompt",
+      "tense synths",
+      "--preserve-speech",
+    ]);
+
+    expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/video-to-video-music");
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("video_url")).toBe("https://in.example.com/clip.mp4");
+    expect(form.get("prompt")).toBe("tense synths");
+    expect(form.get("preserve_speech")).toBe("true");
+    expect(fetchSpy).toHaveBeenCalledWith("https://cdn.example.com/scored.mp4", expect.anything());
+    expect(vi.mocked(writeFile).mock.calls[0]?.[0]).toBe("output.mp4");
+  });
+
+  it("sends --isolate-vocals and omits both speech flags when neither is passed", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvm2", status: "processing" })
+        : json({
+            task_id: "vvm2",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/scored.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--isolate-vocals",
+    ]);
+    expect((calls[0]!.init.body as FormData).get("isolate_vocals")).toBe("true");
+    expect((calls[0]!.init.body as FormData).has("preserve_speech")).toBe(false);
+
+    calls.length = 0;
+    await runVideoToVideoMusic(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+    const plain = calls[0]!.init.body as FormData;
+    expect(plain.has("preserve_speech")).toBe(false);
+    expect(plain.has("isolate_vocals")).toBe(false);
+  });
+
+  it("honors --output over the URL-derived default", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvm3", status: "processing" })
+        : json({
+            task_id: "vvm3",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/scored.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--output",
+      "out/scored.mov",
+    ]);
+
+    expect(vi.mocked(writeFile).mock.calls[0]?.[0]).toBe("out/scored.mov");
+  });
+
+  it("exits when neither --video nor --video-url is given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(runVideoToVideoMusic(client, ["--prompt", "x"])).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: pass exactly one of --video or --video-url",
+    );
+  });
+
+  it("exits when both --video and --video-url are given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToVideoMusic(client, [
+        "--video",
+        "clip.mp4",
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+      ]),
+    ).rejects.toThrow("process.exit");
+  });
+});
+
+describe("runVideoToVideoSfx", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("submits to /v1/video-to-video-sfx, polls, and writes the muxed video", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-sfx")
+        ? json({ task_id: "vvs1", status: "processing" })
+        : json({
+            task_id: "vvs1",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/foley.mp4" },
+          }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToVideoSfx(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--prompt",
+      "footsteps",
+    ]);
+
+    expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/video-to-video-sfx");
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("video_url")).toBe("https://in.example.com/clip.mp4");
+    expect(form.get("prompt")).toBe("footsteps");
+    expect(fetchSpy).toHaveBeenCalledWith("https://cdn.example.com/foley.mp4", expect.anything());
+    expect(vi.mocked(writeFile).mock.calls[0]?.[0]).toBe("output.mp4");
+  });
+
+  it("sends --segments through to the request", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-sfx")
+        ? json({ task_id: "vvs2", status: "processing" })
+        : json({
+            task_id: "vvs2",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/foley.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToVideoSfx(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--segments",
+      '[{"start":0,"end":5,"prompt":"engine hum"}]',
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("segments")).toBe(JSON.stringify([{ start: 0, end: 5, prompt: "engine hum" }]));
+  });
+
+  it("exits with a shape-mismatch error naming video-to-video-sfx when given music-shaped segments", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToVideoSfx(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--segments",
+        '[{"start":0,"prompt":"airy pads","label":"intro"}]',
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: video-to-video-sfx segments take {start, end, prompt} — got an object with keys start, prompt, label",
+    );
+  });
+
+  it("exits when neither --video nor --video-url is given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(runVideoToVideoSfx(client, ["--prompt", "x"])).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: pass exactly one of --video or --video-url",
+    );
+  });
+
+  it("exits when both --video and --video-url are given", async () => {
+    const { client } = mockClient(() => json({}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runVideoToVideoSfx(client, [
+        "--video",
+        "clip.mp4",
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+      ]),
+    ).rejects.toThrow("process.exit");
   });
 });
 
