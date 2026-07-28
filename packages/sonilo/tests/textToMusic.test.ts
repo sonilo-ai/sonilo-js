@@ -123,4 +123,39 @@ describe("textToMusic.submit", () => {
     expect(form.get("prompt")).toBe("lofi");
     expect(form.get("duration")).toBe("10");
   });
+
+  it("posts variants_num when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "tm2", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.textToMusic.submit({ prompt: "lofi", duration: 10, variantsNum: 3 });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("variants_num")).toBe("3");
+  });
+
+  it("omits variants_num when unset", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "tm3", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.textToMusic.submit({ prompt: "lofi", duration: 10 });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("variants_num")).toBe(false);
+  });
+});
+
+describe("textToMusic.stream ignores variantsNum", () => {
+  it("never sends variants_num on the plain stream", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.textToMusic.generate({ prompt: "p", duration: 10, variantsNum: 3 });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("variants_num")).toBe(false);
+  });
 });

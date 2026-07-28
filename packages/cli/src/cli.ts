@@ -9,8 +9,10 @@ import {
   download,
   type DubbingParams,
   type DubbingResult,
+  type MusicMediaEntry,
   type MusicTaskResult,
   type Segment,
+  type SfxMedia,
   type SfxResult,
   type SfxSegment,
   type SfxTask,
@@ -51,6 +53,12 @@ text-to-music options:
   --async               Submit and poll instead of streaming the response
   --segments <json>     Per-segment prompts: [{start, prompt, label?}, ...]
                         (see "Segments" below)
+  --variants <n>        How many distinct variants to generate (1-10,
+                        default 1). Forces --async above 1. Cost scales
+                        linearly; above 1 is never covered by the free
+                        trial. Above 1, one file is written per variant:
+                        --output track.wav --variants 3 writes track.0.wav,
+                        track.1.wav, track.2.wav.
 
 video-to-music options:
   --video <path>              Required (or --video-url). Local file to score.
@@ -63,6 +71,12 @@ video-to-music options:
   --async                       Submit and poll instead of streaming
   --segments <json>             Per-segment prompts: [{start, prompt, label?}, ...]
                                 (see "Segments" below)
+  --variants <n>                How many distinct variants to generate (1-10,
+                                default 1). Forces --async above 1. Cost
+                                scales linearly; above 1 is never covered by
+                                the free trial. Above 1, one file is written
+                                per variant, indexed before the extension
+                                (see --variants under text-to-music above).
 
 text-to-sfx options:
   --prompt <text>        Required. What the sound effect should be.
@@ -96,6 +110,14 @@ video-to-sound / video-to-video-sound options (both async-only):
                           Named <output> with ".<stem>" inserted before the
                           extension: --output mix.wav --stem music writes
                           mix.wav and mix.music.wav.
+  --variants <n>          How many distinct variants to generate (1-10,
+                          default 1). Cost scales linearly; above 1 is never
+                          covered by the free trial. Above 1, one combined
+                          output (plus any --stem files) is written per
+                          variant, indexed before the extension: --output
+                          mix.wav --variants 2 writes mix.0.wav, mix.1.wav
+                          (and mix.0.music.wav, mix.1.music.wav with
+                          --stem music).
 
 video-to-video-music options (async-only, writes a video):
   --video <path>         Required (or --video-url). Local file to score.
@@ -104,6 +126,12 @@ video-to-video-music options (async-only, writes a video):
   --preserve-speech       Keep the source speech in the result.
   --isolate-vocals        Legacy alias for --preserve-speech.
   --output <path>         Where to save the video (default: ./output.mp4)
+  --variants <n>          How many distinct variants to generate (1-10,
+                          default 1). Cost scales linearly; above 1 is never
+                          covered by the free trial. Above 1, one video is
+                          written per variant, indexed before the extension:
+                          --output out.mp4 --variants 2 writes out.0.mp4,
+                          out.1.mp4.
 
 video-to-video-sfx options (async-only, writes a video):
   --video <path>         Required (or --video-url). Local file to score.
@@ -412,6 +440,25 @@ export function stemOutputPath(output: string, stem: string, stemUrl: string): s
   return ext ? `${base}.${stem}.${ext}` : `${base}.${stem}`;
 }
 
+/** Turn one `--output` value into a per-variant path when `--variants`
+ * generated more than one result: `track.wav` + index 1 becomes
+ * `track.1.wav`. Only called once a command already knows it has more than
+ * one variant — the single-variant path (the overwhelming common case, and
+ * the default) keeps writing the literal `--output` value, unsuffixed, so
+ * behavior is unchanged unless `--variants` is actually used above 1.
+ * Mirrors `languageOutputPath`'s insertion rule exactly (the extension
+ * search stops at the last path separator so a dot in a directory name is
+ * never mistaken for one), keyed on a numeric index instead of a language
+ * code. */
+export function variantOutputPath(template: string, index: number): string {
+  const dot = template.lastIndexOf(".");
+  const slash = Math.max(template.lastIndexOf("/"), template.lastIndexOf("\\"));
+  if (dot > slash + 1) {
+    return `${template.slice(0, dot)}.${index}${template.slice(dot)}`;
+  }
+  return `${template}.${index}`;
+}
+
 async function writeAudio(bytes: Uint8Array, path: string): Promise<void> {
   await writeFile(path, bytes);
   console.log(`Wrote ${path} (${bytes.byteLength.toLocaleString()} bytes)`);
@@ -480,6 +527,24 @@ export async function runTasksWait(
   printJson(await client.tasks.wait(taskId, opts));
 }
 
+/** Write every entry of an async music result's `audio[]`. At the default
+ * `--variants` of 1 (the overwhelming common case) `tracks` has exactly one
+ * entry, and this writes it at the literal `mainOutput` path — exactly what
+ * both callers did before variants existed. Above 1 it writes one file per
+ * variant, indexed via `variantOutputPath`, so a multi-variant run never
+ * silently discards all but the first result. */
+async function writeMusicTracks(tracks: MusicMediaEntry[], mainOutput: string): Promise<void> {
+  if (tracks.length <= 1) {
+    const track = tracks[0];
+    if (!track) fail("task succeeded but returned no audio");
+    await writeAudio(await download(track), mainOutput);
+    return;
+  }
+  for (const [index, track] of tracks.entries()) {
+    await writeAudio(await download(track), variantOutputPath(mainOutput, index));
+  }
+}
+
 export async function runTextToMusic(client: SoniloClient, argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -490,12 +555,15 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
       format: { type: "string" },
       async: { type: "boolean" },
       segments: { type: "string" },
+      variants: { type: "string" },
     },
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
   const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
-  const useAsync = values.async === true || format === "wav";
+  const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
+  // variantsNum > 1 requires the async task API, same as outputFormat "wav".
+  const useAsync = values.async === true || format === "wav" || (variantsNum ?? 1) > 1;
   const segments = (await readSegments("text-to-music", values.segments, MUSIC_SEGMENTS)) as
     | Segment[]
     | undefined;
@@ -511,12 +579,11 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
     mode: "async",
     outputFormat: format,
     segments,
+    variantsNum,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
-  const track = result.audio?.[0];
-  if (!track) fail("task succeeded but returned no audio");
-  await writeAudio(await download(track), outputPath(values.output, format));
+  await writeMusicTracks(result.audio ?? [], outputPath(values.output, format));
 }
 
 export async function runVideoToMusic(client: SoniloClient, argv: string[]): Promise<void> {
@@ -532,6 +599,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
       "preserve-speech": { type: "boolean" },
       async: { type: "boolean" },
       segments: { type: "string" },
+      variants: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -542,13 +610,20 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   // two independent options: the backend ORs them and normalizes onto a single
   // flag (preserve_speech is the current public name, isolate_vocals the legacy
   // field still sent by existing callers). Either one forces async, and either
-  // one makes the task carry `vocals`/`mux` entries — but this command writes
-  // only `audio[0]`, and the CLI has no --stem to fetch the rest, so the help
-  // must not advertise a stem it cannot hand back. See the help text above.
+  // one makes the task carry `vocals`/`mux` entries — but the CLI has no
+  // --stem to fetch those (unlike --variants, which writes every `audio[]`
+  // entry, `vocals`/`mux` stay undownloaded here), so the help must not
+  // advertise a stem it cannot hand back. See the help text above.
   const isolateVocals = values["isolate-vocals"] === true;
   const preserveSpeech = values["preserve-speech"] === true;
+  const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
+  // variantsNum > 1 requires the async task API, same as the other async-only options.
   const useAsync =
-    values.async === true || format === "wav" || isolateVocals || preserveSpeech;
+    values.async === true ||
+    format === "wav" ||
+    isolateVocals ||
+    preserveSpeech ||
+    (variantsNum ?? 1) > 1;
   const segments = (await readSegments("video-to-music", values.segments, MUSIC_SEGMENTS)) as
     | Segment[]
     | undefined;
@@ -572,12 +647,11 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
     isolateVocals,
     preserveSpeech,
     segments,
+    variantsNum,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
-  const track = result.audio?.[0];
-  if (!track) fail("task succeeded but returned no audio");
-  await writeAudio(await download(track), outputPath(values.output, format));
+  await writeMusicTracks(result.audio ?? [], outputPath(values.output, format));
 }
 
 export async function runTextToSfx(client: SoniloClient, argv: string[]): Promise<void> {
@@ -661,6 +735,7 @@ async function parseSoundArgs(
       output: { type: "string" },
       segments: { type: "string" },
       stem: { type: "string", multiple: true },
+      variants: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -678,35 +753,77 @@ async function parseSoundArgs(
       preserveSpeech: values["preserve-speech"] === true ? true : undefined,
       ducking: values["no-ducking"] === true ? false : undefined,
       segments,
+      variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
     },
     output: values.output,
     stems: parseStems(values.stem),
   };
 }
 
-/** Write each `--stem` file requested for a combined sound result, in
- * addition to (never instead of) the combined output already written to
- * `mainOutput`. A stem the result does not carry — most commonly
+/** Write each `--stem` file requested for one variant of a combined sound
+ * result, in addition to (never instead of) the combined output already
+ * written to `mainOutput`. `media` is either the top-level `SoundResult`
+ * (single-variant path) or one `SoundOutputEntry` (multi-variant path) — both
+ * carry the same `music`/`music_processed`/`sfx` field names, so one function
+ * serves both. A stem the entry does not carry — most commonly
  * `music_processed`, which only exists when `preserveSpeech` or `ducking`
  * actually altered the music bed — fails loudly through the same `fail()`
  * path as every other CLI error, rather than being skipped or writing an
  * empty file. */
 async function writeStems(
   command: string,
-  result: SoundResult,
+  media: { music?: SfxMedia; music_processed?: SfxMedia; sfx?: SfxMedia },
+  status: string,
   stems: SoundStem[],
   mainOutput: string,
 ): Promise<void> {
   for (const stem of stems) {
-    const media = result[stem];
-    if (!media) {
+    const m = media[stem];
+    if (!m) {
       const reason =
         stem === "music_processed"
           ? " — it only exists when --preserve-speech or ducking actually altered the music bed"
           : "";
-      fail(`${command}: no "${stem}" stem on this result (status: ${result.status})${reason}`);
+      fail(`${command}: no "${stem}" stem on this result (status: ${status})${reason}`);
     }
-    await writeAudio(await download(media), stemOutputPath(mainOutput, stem, media.url));
+    await writeAudio(await download(m), stemOutputPath(mainOutput, stem, m.url));
+  }
+}
+
+/** Write a `videoToSound` / `videoToVideoSound` result: the combined output
+ * plus any requested `--stem` files, for every variant.
+ *
+ * At the default `--variants` of 1 (the overwhelming common case) `outputs`
+ * has at most one entry, and this writes exactly what both callers did
+ * before variants existed — a single main file at `output`, unsuffixed, using
+ * `urlFallback` to locate it (video-to-sound falls back to the sfx/music
+ * stem URL if `output_url` is somehow missing; video-to-video-sound does
+ * not, since a video result has no meaningful audio-only fallback). Above 1
+ * it writes one set of files per variant, indexed via `variantOutputPath`, so
+ * a multi-variant run never silently discards all but the first result. */
+async function writeSoundResult(
+  command: string,
+  result: SoundResult,
+  output: string | undefined,
+  stems: SoundStem[],
+  fallbackExt: string,
+  urlFallback: (result: SoundResult) => string | undefined,
+  emptyMessage: string,
+): Promise<void> {
+  const outputs = result.outputs;
+  if (!outputs || outputs.length <= 1) {
+    const url = outputs?.[0]?.output_url ?? urlFallback(result);
+    if (!url) fail(emptyMessage);
+    const mainOutput = outputPath(output, extFromUrl(url, fallbackExt));
+    await writeAudio(await download(url), mainOutput);
+    await writeStems(command, outputs?.[0] ?? result, result.status, stems, mainOutput);
+    return;
+  }
+  const template = outputPath(output, extFromUrl(outputs[0]!.output_url, fallbackExt));
+  for (const [index, entry] of outputs.entries()) {
+    const variantOutput = variantOutputPath(template, index);
+    await writeAudio(await download(entry.output_url), variantOutput);
+    await writeStems(command, entry, result.status, stems, variantOutput);
   }
 }
 
@@ -715,11 +832,15 @@ export async function runVideoToSound(client: SoniloClient, argv: string[]): Pro
   const task = await client.videoToSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
-  const url = result.output_url ?? result.sfx?.url ?? result.music?.url;
-  if (!url) fail("task succeeded but returned no output");
-  const mainOutput = outputPath(output, extFromUrl(url, "wav"));
-  await writeAudio(await download(url), mainOutput);
-  await writeStems("video-to-sound", result, stems, mainOutput);
+  await writeSoundResult(
+    "video-to-sound",
+    result,
+    output,
+    stems,
+    "wav",
+    (r) => r.output_url ?? r.sfx?.url ?? r.music?.url,
+    "task succeeded but returned no output",
+  );
 }
 
 export async function runVideoToVideoSound(client: SoniloClient, argv: string[]): Promise<void> {
@@ -727,20 +848,28 @@ export async function runVideoToVideoSound(client: SoniloClient, argv: string[])
   const task = await client.videoToVideoSound.submit(params);
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<SoundResult>(task.task_id);
-  const url = result.output_url;
-  if (!url) fail("task succeeded but returned no output video");
-  const mainOutput = outputPath(output, extFromUrl(url, "mp4"));
-  await writeAudio(await download(url), mainOutput);
-  await writeStems("video-to-video-sound", result, stems, mainOutput);
+  await writeSoundResult(
+    "video-to-video-sound",
+    result,
+    output,
+    stems,
+    "mp4",
+    (r) => r.output_url,
+    "task succeeded but returned no output video",
+  );
 }
 
 /** Shared tail of `video-to-video-music` / `video-to-video-sfx`: announce the
- * submitted task, poll it, and write the muxed video.
+ * submitted task, poll it, and write the muxed video(s).
  *
  * These two endpoints do NOT use the flat `output_url` envelope that
- * `video-to-video-sound` returns — their result carries the re-hosted video as
- * a `video` media object (`VideoResult.video.url`), so the URL is read from
- * there. The extension still comes from the URL, defaulting to mp4. */
+ * `video-to-video-sound` returns — their result carries the re-hosted video(s)
+ * in `videos[]`, with `video` a permanent alias for `videos[0]`. Only
+ * `video-to-video-music` takes `--variants`; `video-to-video-sfx` has no
+ * variants knob, so its `videos[]` is always a single entry and this falls
+ * through to the same one-file write it always did. Above one variant, one
+ * file is written per entry, indexed via `variantOutputPath`. The extension
+ * comes from each entry's own URL, defaulting to mp4. */
 async function waitAndWriteVideo(
   client: SoniloClient,
   task: SfxTask,
@@ -748,9 +877,21 @@ async function waitAndWriteVideo(
 ): Promise<void> {
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<VideoResult>(task.task_id);
-  const url = result.video?.url;
-  if (!url) fail("task succeeded but returned no output video");
-  await writeAudio(await download(url), outputPath(output, extFromUrl(url, "mp4")));
+  const videos = result.videos && result.videos.length > 0
+    ? result.videos
+    : result.video
+      ? [result.video]
+      : [];
+  const first = videos[0];
+  if (!first?.url) fail("task succeeded but returned no output video");
+  const mainOutput = outputPath(output, extFromUrl(first.url, "mp4"));
+  if (videos.length <= 1) {
+    await writeAudio(await download(first.url), mainOutput);
+    return;
+  }
+  for (const [index, video] of videos.entries()) {
+    await writeAudio(await download(video.url), variantOutputPath(mainOutput, index));
+  }
 }
 
 export async function runVideoToVideoMusic(client: SoniloClient, argv: string[]): Promise<void> {
@@ -763,6 +904,7 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
       "preserve-speech": { type: "boolean" },
       "isolate-vocals": { type: "boolean" },
       output: { type: "string" },
+      variants: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -776,6 +918,7 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
     prompt: values.prompt,
     preserveSpeech: values["preserve-speech"] === true ? true : undefined,
     isolateVocals: values["isolate-vocals"] === true ? true : undefined,
+    variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
   });
   await waitAndWriteVideo(client, task, values.output);
 }

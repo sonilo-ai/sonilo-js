@@ -44,8 +44,9 @@ export class VideoToMusic {
   /**
    * Submit an async video-to-music task; poll its result with
    * `client.tasks.wait<MusicTaskResult>(task.task_id)`. Required for
-   * `isolateVocals` — the backend rejects vocal isolation on the plain
-   * stream, and it only ever runs in async mode.
+   * `isolateVocals`/`preserveSpeech`, `outputFormat: "wav"`, and
+   * `variantsNum` above 1 — the backend rejects all of these on the plain
+   * stream, and they only ever run in async mode.
    */
   async submit(params: VideoToMusicParams): Promise<SfxTask> {
     if ((params.video === undefined) === (params.videoUrl === undefined)) {
@@ -56,14 +57,15 @@ export class VideoToMusic {
       params.isolateVocals ||
       params.preserveSpeech ||
       params.ducking !== undefined ||
-      params.outputFormat === "wav";
+      params.outputFormat === "wav" ||
+      (params.variantsNum !== undefined && params.variantsNum > 1);
     // submit() always wants an async task ack, never a stream. Default to
     // async; only object if the caller explicitly asked for stream while
     // also requesting an async-only feature.
     if (mode === undefined) mode = "async";
     if (needsAsync && mode !== "async") {
       throw new SoniloError(
-        'isolateVocals/preserveSpeech/ducking/outputFormat "wav" require mode: "async"',
+        'isolateVocals/preserveSpeech/ducking/outputFormat "wav"/variantsNum > 1 require mode: "async"',
       );
     }
     const form = new FormData();
@@ -89,6 +91,9 @@ export class VideoToMusic {
     }
     if (params.ducking !== undefined) {
       form.set("ducking", String(params.ducking));
+    }
+    if (params.variantsNum !== undefined) {
+      form.set("variants_num", String(params.variantsNum));
     }
     const res = await this.client.request("/v1/video-to-music", {
       method: "POST",

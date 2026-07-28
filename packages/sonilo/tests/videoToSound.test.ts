@@ -102,6 +102,70 @@ describe("videoToSound", () => {
     expect(res.music_processed).toBeUndefined();
     expect(res.duration_seconds).toBe(8.5);
   });
+
+  it("posts variants_num when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToSound.submit({ videoUrl: "https://x/v.mp4", variantsNum: 6 });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("variants_num")).toBe("6");
+  });
+
+  it("omits variants_num when unset", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToSound.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("variants_num")).toBe(false);
+  });
+
+  it("generate() surfaces outputs[] alongside the top-level aliases", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(ACK, 202))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          task_id: "sd1",
+          type: "video_to_sound",
+          status: "succeeded",
+          output_url: "https://r2/sound0.wav",
+          output_type: "audio",
+          output_bytes: 12,
+          music: { url: "https://r2/music0.m4a" },
+          sfx: { url: "https://r2/sfx0.wav" },
+          outputs: [
+            {
+              variant_index: 0,
+              output_url: "https://r2/sound0.wav",
+              output_type: "audio",
+              output_bytes: 12,
+              music: { url: "https://r2/music0.m4a" },
+              sfx: { url: "https://r2/sfx0.wav" },
+            },
+            {
+              variant_index: 1,
+              output_url: "https://r2/sound1.wav",
+              output_type: "audio",
+              output_bytes: 13,
+              music: { url: "https://r2/music1.m4a" },
+              sfx: { url: "https://r2/sfx1.wav" },
+            },
+          ],
+        }),
+      );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    const res = await client.videoToSound.generate(
+      { videoUrl: "https://x/v.mp4", variantsNum: 2 },
+      { pollInterval: 0 },
+    );
+    expect(res.outputs).toHaveLength(2);
+    expect(res.outputs?.[1]?.output_url).toBe("https://r2/sound1.wav");
+    expect(res.output_url).toBe(res.outputs?.[0]?.output_url);
+  });
 });
 
 describe("videoToVideoSound", () => {
@@ -140,5 +204,15 @@ describe("videoToVideoSound", () => {
     );
     expect(res.output_type).toBe("video");
     expect(res.music_processed?.url).toBe("https://r2/mp.wav");
+  });
+
+  it("posts variants_num when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoSound.submit({ videoUrl: "https://x/v.mp4", variantsNum: 2 });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("variants_num")).toBe("2");
   });
 });

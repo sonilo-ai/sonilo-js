@@ -81,6 +81,12 @@ export interface TextToMusicParams {
   mode?: "stream" | "async";
   /** Container for the async result. `wav` requires `mode: "async"`. Defaults to m4a server-side. */
   outputFormat?: "m4a" | "wav";
+  /** How many distinct music variants to generate in one request (1-10,
+   * default 1). Cost scales linearly, and values above 1 are never covered
+   * by the free trial. Values above 1 require `mode: "async"` — only
+   * meaningful via `submit()`; `stream()`/`generate()` never send it, since
+   * they always request a plain stream. */
+  variantsNum?: number;
   /** Bounds the stream: aborting this cancels the in-flight generation.
    * Passed straight through to `fetch` — it is never rewrapped as
    * RequestTimeoutError, since the client's own absolute timeout does not
@@ -127,6 +133,12 @@ export interface VideoToMusicParams {
    * Default-ON server-side in async mode: leave unset to keep it on, pass
    * `false` to opt out. Free, best-effort; only valid on `submit()`. */
   ducking?: boolean;
+  /** How many distinct music variants to generate in one request (1-10,
+   * default 1). Cost scales linearly, and values above 1 are never covered
+   * by the free trial. Values above 1 require `mode: "async"` (auto-selected
+   * by `submit()`) — only meaningful via `submit()`; `stream()`/`generate()`
+   * never send it, since they always request a plain stream. */
+  variantsNum?: number;
 }
 
 /** One service's free-trial allowance. `remaining` is already floored at 0,
@@ -222,6 +234,11 @@ export interface BaseTaskResult {
   cost?: number;
   error?: SfxError;
   refunded?: boolean;
+  /** Echoes the request's `variantsNum`. Present regardless of task status
+   * (so a `processing`/`failed` poll explains the charge too), but only
+   * when it was above 1 — a default (single-variant) request sees the same
+   * shape it always has. */
+  variants_num?: number;
   [key: string]: unknown;
 }
 
@@ -253,6 +270,11 @@ export interface MusicMediaEntry extends SfxMedia {
   stream_index: number;
   sample_rate?: number;
   channels?: number;
+  /** This entry's own title, present when `variantsNum` was above 1 (and
+   * titles are visible on the account). Each variant is a distinct creative
+   * direction, so it can carry its own title rather than sharing the
+   * top-level `MusicTaskResult.title`, which always names variant 0. */
+  title?: MusicTitle;
 }
 
 /** One muxed audio+video-aligned output, present only when `isolateVocals`
@@ -271,13 +293,20 @@ export interface MusicTitle {
  * (`tasks.wait<MusicTaskResult>()`). Only reachable via `videoToMusic.submit()`
  * with `mode: "async"`. */
 export interface MusicTaskResult extends BaseTaskResult {
+  /** One entry per stream, or one entry per variant when `variantsNum` was
+   * greater than 1 — each variant entry may carry its own `title`. */
   audio?: MusicMediaEntry[];
   /** Vocals-only stem; present only when `isolateVocals` was requested. */
   vocals?: SfxMedia;
-  /** Muxed output per stream; present only when `isolateVocals` was requested. */
+  /** Muxed output per stream (or per variant); present only when
+   * `isolateVocals` was requested. */
   mux?: MusicMuxEntry[];
-  /** Music ducked under the source voice; present only when `ducking` ran. */
+  /** Music ducked under the source voice (per variant when `variantsNum` is
+   * above 1); present only when `ducking` ran. */
   ducked?: MusicMediaEntry[];
+  /** Variant 0's title — the top-level field always names the first variant,
+   * even when `variantsNum` produced others with their own titles on
+   * `audio[]`. */
   title?: MusicTitle;
   duration_seconds?: number;
 }
@@ -292,6 +321,11 @@ export interface WaitOptions {
 /** Result of an async video-to-video task (`videoToVideoMusic`/`videoToVideoSfx`):
  * a re-hosted video with generated music or SFX muxed in. */
 export interface VideoResult extends BaseTaskResult {
+  /** One re-hosted video per variant. On `videoToVideoMusic` this is
+   * populated even at the default `variantsNum` of 1 (as a single-entry
+   * array); `videoToVideoSfx` has no variants knob and always sends one. */
+  videos?: SfxMedia[];
+  /** Permanent alias for `videos[0]`. */
   video?: SfxMedia;
   duration_seconds?: number;
 }
@@ -305,6 +339,11 @@ export interface VideoToVideoMusicParams {
   preserveSpeech?: boolean;
   /** @deprecated Legacy alias for `preserveSpeech`. */
   isolateVocals?: boolean;
+  /** How many distinct music variants to generate in one request (1-10,
+   * default 1). Cost scales linearly, and values above 1 are never covered
+   * by the free trial. This endpoint is always async, so no extra `mode`
+   * gating applies. The result's `videos[]` gets one entry per variant. */
+  variantsNum?: number;
 }
 
 export interface VideoToVideoSfxParams {
@@ -330,6 +369,25 @@ export interface VideoToSoundParams {
   /** Duck the generated music under the source speech. Default-ON
    * server-side: leave unset to keep it on, pass `false` to opt out. */
   ducking?: boolean;
+  /** How many distinct variants to generate in one request (1-10, default
+   * 1). Cost scales linearly, and values above 1 are never covered by the
+   * free trial. Both `videoToSound` and `videoToVideoSound` are always
+   * async, so no extra `mode` gating applies. The result's `outputs[]` gets
+   * one entry per variant. */
+  variantsNum?: number;
+}
+
+/** One variant's outputs on a `videoToSound` / `videoToVideoSound` result.
+ * Present even at the default `variantsNum` of 1, as a single-entry array. */
+export interface SoundOutputEntry {
+  variant_index: number;
+  output_url: string;
+  output_type: "audio" | "video";
+  output_bytes: number;
+  music?: SfxMedia;
+  /** Present only when `preserveSpeech`/`ducking` altered this variant's music bed. */
+  music_processed?: SfxMedia;
+  sfx?: SfxMedia;
 }
 
 /** Result of a `videoToSound` / `videoToVideoSound` task (`tasks.get`) or its
@@ -339,7 +397,11 @@ export interface VideoToSoundParams {
  * than a media object, since these endpoints render one artifact whose kind is
  * announced by `output_type` ("audio" for video-to-sound, "video" for
  * video-to-video-sound). `music`, `music_processed` and `sfx` are the
- * individual stems; pass any of them, or `output_url` itself, to `download()`. */
+ * individual stems; pass any of them, or `output_url` itself, to `download()`.
+ *
+ * `outputs` carries the same fields per variant when `variantsNum` was
+ * greater than 1; `output_url`/`output_type`/`output_bytes`/`music`/
+ * `music_processed`/`sfx` remain permanent aliases for `outputs[0]`. */
 export interface SoundResult extends BaseTaskResult {
   output_url?: string;
   output_type?: "audio" | "video";
@@ -349,6 +411,8 @@ export interface SoundResult extends BaseTaskResult {
   music_processed?: SfxMedia;
   sfx?: SfxMedia;
   duration_seconds?: number;
+  /** One entry per variant; see `SoundOutputEntry`. */
+  outputs?: SoundOutputEntry[];
 }
 
 /**
