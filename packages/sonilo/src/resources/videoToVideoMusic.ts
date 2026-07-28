@@ -27,6 +27,9 @@ export class VideoToVideoMusic {
     if (params.isolateVocals !== undefined) {
       form.set("isolate_vocals", String(params.isolateVocals));
     }
+    if (params.variantsNum !== undefined) {
+      form.set("variants_num", String(params.variantsNum));
+    }
     const res = await this.client.request("/v1/video-to-video-music", {
       method: "POST",
       body: form,

@@ -29,5 +29,8 @@ export async function buildSoundForm(params: VideoToSoundParams): Promise<FormDa
     form.set("preserve_speech", String(params.preserveSpeech));
   }
   if (params.ducking !== undefined) form.set("ducking", String(params.ducking));
+  if (params.variantsNum !== undefined) {
+    form.set("variants_num", String(params.variantsNum));
+  }
   return form;
 }

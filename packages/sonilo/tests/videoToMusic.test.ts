@@ -177,4 +177,57 @@ describe("videoToMusic.submit", () => {
     const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.has("ducking")).toBe(false);
   });
+
+  it("posts variants_num and defaults mode to async when variantsNum > 1", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      variantsNum: 4,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("variants_num")).toBe("4");
+  });
+
+  it("omits variants_num when unset", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({ videoUrl: "https://example.com/v.mp4" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("variants_num")).toBe(false);
+  });
+
+  it("rejects variantsNum > 1 with an explicit non-async mode without making a request", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await expect(
+      client.videoToMusic.submit({
+        videoUrl: "https://example.com/v.mp4",
+        mode: "stream",
+        variantsNum: 2,
+      }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    expect(calls.length).toBe(0);
+  });
+
+  it("does not force async for variantsNum: 1", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      mode: "async",
+      variantsNum: 1,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("variants_num")).toBe("1");
+  });
+});
+
+describe("videoToMusic.stream ignores variantsNum", () => {
+  it("never sends variants_num on the plain stream", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.videoToMusic.generate({
+      videoUrl: "https://example.com/v.mp4",
+      variantsNum: 3,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("variants_num")).toBe(false);
+  });
 });

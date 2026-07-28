@@ -29,6 +29,7 @@ import {
   runVideoToVideoSfx,
   runVideoToVideoSound,
   stemOutputPath,
+  variantOutputPath,
 } from "../src/cli.js";
 import { json, mockClient } from "./helpers.js";
 
@@ -352,6 +353,98 @@ describe("runTextToMusic --segments", () => {
     const form = calls[0]!.init.body as FormData;
     expect(form.has("segments")).toBe(false);
   });
+
+  it("forces --async and posts variants_num when --variants > 1", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/text-to-music")
+        ? json({ task_id: "tm3", status: "processing" })
+        : json({
+            task_id: "tm3",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // No --async passed: --variants 3 alone must force it, same as --format wav.
+    await runTextToMusic(client, [
+      "--prompt",
+      "warm pads",
+      "--duration",
+      "30",
+      "--variants",
+      "3",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("variants_num")).toBe("3");
+  });
+
+  it("writes one indexed file per variant when audio[] has more than one entry", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/text-to-music")
+        ? json({ task_id: "tm4", status: "processing" })
+        : json({
+            task_id: "tm4",
+            status: "succeeded",
+            audio: [
+              { stream_index: 0, url: "https://cdn.example.com/v0.wav" },
+              { stream_index: 1, url: "https://cdn.example.com/v1.wav" },
+            ],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runTextToMusic(client, [
+      "--prompt",
+      "warm pads",
+      "--duration",
+      "30",
+      "--variants",
+      "2",
+      "--output",
+      "track.wav",
+    ]);
+
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toEqual(["track.0.wav", "track.1.wav"]);
+  });
+
+  it("writes a single unsuffixed file when audio[] has exactly one entry, even with --async", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/text-to-music")
+        ? json({ task_id: "tm5", status: "processing" })
+        : json({
+            task_id: "tm5",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.wav" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runTextToMusic(client, [
+      "--prompt",
+      "warm pads",
+      "--duration",
+      "30",
+      "--async",
+      "--output",
+      "track.wav",
+    ]);
+
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual(["track.wav"]);
+  });
 });
 
 describe("runVideoToMusic --segments", () => {
@@ -383,6 +476,44 @@ describe("runVideoToMusic --segments", () => {
 
     const form = calls[0]!.init.body as FormData;
     expect(form.get("segments")).toBe(JSON.stringify([{ start: 0, prompt: "tense synths" }]));
+  });
+
+  it("forces --async and posts variants_num when --variants > 1, without --async passed", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-music")
+        ? json({ task_id: "vm2", status: "processing" })
+        : json({
+            task_id: "vm2",
+            status: "succeeded",
+            audio: [
+              { stream_index: 0, url: "https://cdn.example.com/v0.m4a" },
+              { stream_index: 1, url: "https://cdn.example.com/v1.m4a" },
+            ],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--variants",
+      "2",
+      "--output",
+      "score.m4a",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("variants_num")).toBe("2");
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "score.0.m4a",
+      "score.1.m4a",
+    ]);
   });
 });
 
@@ -681,6 +812,110 @@ describe("runVideoToSound", () => {
       ),
     );
   });
+
+  it("posts variants_num and writes one indexed output (plus stems) per variant", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "vst1", status: "processing" })
+        : json({
+            task_id: "vst1",
+            status: "succeeded",
+            output_url: "https://cdn.example.com/sound0.wav",
+            output_type: "audio",
+            music: { url: "https://cdn.example.com/music0.m4a" },
+            sfx: { url: "https://cdn.example.com/sfx0.wav" },
+            outputs: [
+              {
+                variant_index: 0,
+                output_url: "https://cdn.example.com/sound0.wav",
+                output_type: "audio",
+                output_bytes: 1,
+                music: { url: "https://cdn.example.com/music0.m4a" },
+                sfx: { url: "https://cdn.example.com/sfx0.wav" },
+              },
+              {
+                variant_index: 1,
+                output_url: "https://cdn.example.com/sound1.wav",
+                output_type: "audio",
+                output_bytes: 1,
+                music: { url: "https://cdn.example.com/music1.m4a" },
+                sfx: { url: "https://cdn.example.com/sfx1.wav" },
+              },
+            ],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--variants",
+      "2",
+      "--output",
+      "mix.wav",
+      "--stem",
+      "music",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("variants_num")).toBe("2");
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "mix.0.wav",
+      "mix.0.music.m4a",
+      "mix.1.wav",
+      "mix.1.music.m4a",
+    ]);
+  });
+
+  it("writes a single unsuffixed file (plus stems) when outputs[] has exactly one entry", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/video-to-sound")
+        ? json({ task_id: "vst2", status: "processing" })
+        : json({
+            task_id: "vst2",
+            status: "succeeded",
+            output_url: "https://cdn.example.com/sound.wav",
+            output_type: "audio",
+            music: { url: "https://cdn.example.com/music.m4a" },
+            sfx: { url: "https://cdn.example.com/sfx.wav" },
+            outputs: [
+              {
+                variant_index: 0,
+                output_url: "https://cdn.example.com/sound.wav",
+                output_type: "audio",
+                output_bytes: 1,
+                music: { url: "https://cdn.example.com/music.m4a" },
+                sfx: { url: "https://cdn.example.com/sfx.wav" },
+              },
+            ],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToSound(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--output",
+      "mix.wav",
+      "--stem",
+      "music",
+    ]);
+
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "mix.wav",
+      "mix.music.m4a",
+    ]);
+  });
 });
 
 describe("runVideoToVideoSound", () => {
@@ -833,6 +1068,44 @@ describe("runVideoToVideoMusic", () => {
     const plain = calls[0]!.init.body as FormData;
     expect(plain.has("preserve_speech")).toBe(false);
     expect(plain.has("isolate_vocals")).toBe(false);
+  });
+
+  it("posts variants_num and writes one indexed video per variant", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvm4", status: "processing" })
+        : json({
+            task_id: "vvm4",
+            status: "succeeded",
+            videos: [
+              { url: "https://cdn.example.com/v0.mp4" },
+              { url: "https://cdn.example.com/v1.mp4" },
+            ],
+            video: { url: "https://cdn.example.com/v0.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--variants",
+      "2",
+      "--output",
+      "scored.mp4",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("variants_num")).toBe("2");
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "scored.0.mp4",
+      "scored.1.mp4",
+    ]);
   });
 
   it("honors --output over the URL-derived default", async () => {
@@ -1001,6 +1274,21 @@ describe("runVideoToVideoSfx", () => {
         "https://in.example.com/clip.mp4",
       ]),
     ).rejects.toThrow("process.exit");
+  });
+});
+
+describe("variantOutputPath", () => {
+  it("inserts the index before the extension", () => {
+    expect(variantOutputPath("out/track.wav", 0)).toBe("out/track.0.wav");
+    expect(variantOutputPath("track.wav", 2)).toBe("track.2.wav");
+  });
+
+  it("appends .<index> when the template has no extension", () => {
+    expect(variantOutputPath("track", 1)).toBe("track.1");
+  });
+
+  it("does not mistake a dot in a directory name for an extension", () => {
+    expect(variantOutputPath("v1.2/track", 1)).toBe("v1.2/track.1");
   });
 });
 

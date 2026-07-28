@@ -107,6 +107,46 @@ if (result.ducked) {
 }
 ```
 
+### Variants (async)
+
+`variantsNum` generates several distinct music variants in one request (1-10,
+default 1) — each is its own creative direction, with its own title. It's
+available on `textToMusic`, `videoToMusic`, `videoToVideoMusic`,
+`videoToSound` and `videoToVideoSound`. Cost scales linearly with the count,
+and **values above 1 are never covered by the free trial**.
+
+On `textToMusic`/`videoToMusic`, `variantsNum` above 1 requires the async task
+API — same as `preserveSpeech` above — so it implies `mode: "async"` if you
+don't set `mode` yourself; `stream()`/`generate()` never send it, since they
+always request a plain stream. `videoToVideoMusic`, `videoToSound` and
+`videoToVideoSound` are already async-only, so no extra `mode` handling is
+needed there.
+
+```ts
+const task = await client.textToMusic.submit({
+  prompt: "warm lo-fi piano",
+  duration: 30,
+  variantsNum: 3,
+});
+const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
+
+// audio has one entry per variant; each entry may carry its own `title`.
+for (const variant of result.audio ?? []) {
+  console.log(variant.title?.title, variant.url);
+}
+```
+
+`videoToVideoMusic` returns one video per variant in `videos[]`, with `video`
+kept as a permanent alias for `videos[0]`. `videoToSound`/`videoToVideoSound`
+return one entry per variant in `outputs[]`, each shaped like the top-level
+result (`output_url`, `output_type`, `output_bytes`, `music`,
+`music_processed?`, `sfx`) — the top-level fields remain permanent aliases for
+`outputs[0]`. All of these arrays are present even at the default
+`variantsNum` of 1, as a single-entry array; every other field is unchanged.
+
+`GET /v1/tasks/{id}` (`tasks.get`/`tasks.wait`) echoes the request's
+`variantsNum` back as `variants_num`, but only when it was above 1.
+
 ## Video to video
 
 Generate a soundtrack or sound effects and get back a **re-hosted video** with

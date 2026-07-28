@@ -38,6 +38,7 @@ export type {
   SfxResult,
   SfxSegment,
   SfxTask,
+  SoundOutputEntry,
   SoundResult,
   StreamEvent,
   TextToMusicParams,

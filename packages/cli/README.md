@@ -42,6 +42,10 @@ sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output
 sonilo text-to-music --duration 60 --async \
   --segments '[{"start":0,"prompt":"airy pads","label":"intro"},{"start":15,"prompt":"driving beat","label":"chorus"}]'
 
+# Generate 3 distinct variants in one call (forces --async); writes
+# track.0.wav, track.1.wav, track.2.wav
+sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --variants 3 --output track.wav
+
 # Generate a sound effect from a text prompt
 sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
 
@@ -74,7 +78,8 @@ sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 Run `sonilo --help` for the full option list, including `--preserve-speech` for
 `video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
 `--no-ducking` / `--stem` for the `video-to-sound` commands, `--languages` /
-`--timeout` for `dubbing`, and the `--format` options each command accepts.
+`--timeout` for `dubbing`, `--variants` for the five commands that take it, and
+the `--format` options each command accepts.
 
 `video-to-sound` and `video-to-video-sound` return a combined render plus
 three individual layers — `music`, `music_processed`, and `sfx`. `--stem` (one
@@ -148,10 +153,40 @@ you run it:
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
-`--format wav` (or `--preserve-speech` / `--isolate-vocals`) submits an async
-task and polls it instead of streaming the response — matching how the
-underlying [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
+`--format wav` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
+above 1) submits an async task and polls it instead of streaming the
+response — matching how the underlying
+[`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
 `mode: "async"` for those options.
+
+## Variants
+
+`--variants <n>` generates several distinct variants in one request (1-10,
+default 1) — each is its own creative direction. It's available on
+`text-to-music`, `video-to-music`, `video-to-video-music`, `video-to-sound`
+and `video-to-video-sound`. Cost scales linearly with the count, and **values
+above 1 are never covered by the free trial**.
+
+At the default of 1, every command writes exactly the single file it always
+has. Above 1, one file is written per variant — the `--output` path with the
+variant's index inserted before the extension:
+
+```bash
+sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --variants 3 --output track.wav
+# writes track.0.wav, track.1.wav, track.2.wav
+
+sonilo video-to-video-music --video clip.mp4 --variants 2 --output scored.mp4
+# writes scored.0.mp4, scored.1.mp4
+
+sonilo video-to-sound --video clip.mp4 --variants 2 --output mix.wav --stem music
+# writes mix.0.wav, mix.1.wav, plus mix.0.music.wav, mix.1.music.wav
+```
+
+On `text-to-music` / `video-to-music`, `--variants` above 1 forces `--async` —
+same as `--format wav` and `--preserve-speech` — since the plain streaming
+response can only ever carry one track. `video-to-video-music`,
+`video-to-sound` and `video-to-video-sound` are already async-only, so
+`--variants` needs no extra flag there.
 
 ## Free trial
 

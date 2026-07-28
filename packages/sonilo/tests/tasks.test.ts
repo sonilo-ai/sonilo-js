@@ -182,4 +182,50 @@ describe("tasks.wait<MusicTaskResult>", () => {
     expect(err.code).toBe("GENERATION_FAILED");
     expect(err.refunded).toBe(true);
   });
+
+  it("parses per-variant titles and the variants_num echo", async () => {
+    const { client } = mockClient(() =>
+      jsonResponse({
+        task_id: "t1",
+        type: "video_to_music",
+        status: "succeeded",
+        variants_num: 2,
+        audio: [
+          {
+            stream_index: 0,
+            url: "https://r2.example.com/v0.m4a",
+            title: { title: "Sunset Drive", summary: "Dreamy synthwave" },
+          },
+          {
+            stream_index: 1,
+            url: "https://r2.example.com/v1.m4a",
+            title: { title: "Night Run" },
+          },
+        ],
+        title: { title: "Sunset Drive", summary: "Dreamy synthwave" },
+      }),
+    );
+    const result = await client.tasks.wait<MusicTaskResult>("t1", { pollInterval: 0 });
+    expect(result.variants_num).toBe(2);
+    expect(result.audio?.[0]!.title?.title).toBe("Sunset Drive");
+    expect(result.audio?.[1]!.title?.title).toBe("Night Run");
+    expect(result.title?.title).toBe("Sunset Drive");
+  });
+});
+
+describe("tasks.get variants_num echo", () => {
+  it("is omitted by default (variants_num <= 1)", async () => {
+    const { client } = mockClient(() => jsonResponse(MUSIC_SUCCEEDED));
+    const result = await client.tasks.get<MusicTaskResult>("t1");
+    expect(result.variants_num).toBeUndefined();
+  });
+
+  it("is present on a processing task, not only a succeeded one", async () => {
+    const { client } = mockClient(() =>
+      jsonResponse({ task_id: "t1", type: "video_to_music", status: "processing", variants_num: 3 }),
+    );
+    const result = await client.tasks.get<MusicTaskResult>("t1");
+    expect(result.status).toBe("processing");
+    expect(result.variants_num).toBe(3);
+  });
 });
