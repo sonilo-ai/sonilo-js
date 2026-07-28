@@ -11,7 +11,7 @@ npm install sonilo
 
 ## Authentication
 
-Create an API key in your [Sonilo dashboard](https://platform.sonilo.com/dashboard/api-keys),
+Create an API key in your [Sonilo dashboard](https://platform.sonilo.com/dashboard/api-keys?utm_source=sonilo_js&utm_medium=readme&utm_campaign=sdk_quickstart),
 then give it to the client either as an environment variable (recommended) or
 inline:
 
