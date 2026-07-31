@@ -1,5 +1,16 @@
 # sonilo-cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 99ba0b6: Add the optional `ducking` boolean to dubbing (`DubbingParams.ducking`, CLI `--ducking`). Default off server-side: the background music/effects bed is always kept, at a constant level; pass `true` to duck it under the dubbed voice. Free parameter.
+
+### Patch Changes
+
+- Updated dependencies [99ba0b6]
+  - sonilo@0.9.0
+
 ## 0.6.0
 
 ### Minor Changes
