@@ -255,7 +255,11 @@ const result = await client.dubbing.generate(
 Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
 the dubbing pipeline fetches the source itself and rejects plain http). The
 optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
-codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`.
+codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`. The optional `ducking`
+boolean (default off, free) ducks the background music/effects bed under the
+dubbed voice while it speaks; when off the bed is kept at a constant level.
+Note this default is the opposite of video-to-music's `ducking`, which is on
+by default.
 
 Dubbing is async-only, and the source video may be at most 180 seconds long.
 You are billed per language. Dubbing has **no free trial allowance** — unlike

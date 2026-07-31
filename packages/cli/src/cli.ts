@@ -157,6 +157,9 @@ dubbing options (async-only):
   --video-url <url>      Required (or --video). Must be an https URL.
   --languages <list>      Comma-separated target languages. Default: zh_cn,es,fr
                           Supported: en, zh_cn, ja, ko, pt, es, de, fr, it, ru
+  --ducking               Duck the background music/effects bed under the
+                          dubbed voice. Off by default: the bed is kept at a
+                          constant level. Free.
   --output <path>         Filename template. One file is written per language,
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
@@ -987,6 +990,7 @@ export function parseDubbingArgs(argv: string[]): {
       video: { type: "string" },
       "video-url": { type: "string" },
       languages: { type: "string" },
+      ducking: { type: "boolean" },
       output: { type: "string" },
       timeout: { type: "string" },
     },
@@ -1009,6 +1013,9 @@ export function parseDubbingArgs(argv: string[]): {
       video: values.video,
       videoUrl: values["video-url"],
       languages,
+      // Default-OFF server-side (unlike v2m's --no-ducking): only sent when
+      // the user explicitly opts in with --ducking.
+      ducking: values.ducking === true ? true : undefined,
     },
     output: values.output,
     timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
