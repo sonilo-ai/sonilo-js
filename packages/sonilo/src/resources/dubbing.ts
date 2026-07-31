@@ -35,6 +35,9 @@ export async function buildDubbingForm(params: DubbingParams): Promise<FormData>
   if (params.languages !== undefined) {
     form.set("languages", JSON.stringify(params.languages));
   }
+  if (params.ducking !== undefined) {
+    form.set("ducking", String(params.ducking));
+  }
   return form;
 }
 

@@ -39,6 +39,27 @@ describe("dubbing", () => {
     expect(form.has("languages")).toBe(false);
   });
 
+  it("sends ducking=true only when explicitly enabled", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4", ducking: true });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("ducking")).toBe("true");
+  });
+
+  it("omits ducking when unset so the server default (off) applies", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("ducking")).toBe(false);
+  });
+
+  it("sends an explicit ducking=false through unchanged", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4", ducking: false });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("ducking")).toBe("false");
+  });
+
   it("uploads a File as the video part", async () => {
     const { fetch, client } = ackClient();
     await client.dubbing.submit({ video: new File(["bytes"], "clip.mp4") });

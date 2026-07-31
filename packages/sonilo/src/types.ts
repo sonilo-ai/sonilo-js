@@ -443,6 +443,12 @@ export interface DubbingParams {
   videoUrl?: string;
   /** Omit to get the server default, `["zh_cn", "es", "fr"]`. */
   languages?: DubbingLanguage[];
+  /**
+   * Duck the background music/effects bed under the dubbed voice. Default
+   * OFF server-side (the opposite of video-to-music's `ducking`): the bed
+   * is always kept, at a constant level unless this is `true`. Free.
+   */
+  ducking?: boolean;
 }
 
 export interface DubbingResult extends BaseTaskResult {
