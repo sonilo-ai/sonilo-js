@@ -250,4 +250,44 @@ describe("videoToSound outputFormat", () => {
     const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.has("output_format")).toBe(false);
   });
+
+  it("sends keep_original_sound when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoSound.submit({
+      videoUrl: "https://x/v.mp4",
+      keepOriginalSound: true,
+      ducking: false,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("keep_original_sound")).toBe("true");
+    // Together these two are the "full original sound + static mix" row.
+    expect(form.get("ducking")).toBe("false");
+  });
+
+  it("omits keep_original_sound when unset so the server default (off) applies", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoSound.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("keep_original_sound")).toBe(false);
+  });
+
+  // The mirror of the output_format guard above, running the other way:
+  // keepOriginalSound is video-only, so VideoToSoundParams types it `never`.
+  // The type is the guard; this asserts nothing reaches the wire either, since
+  // the server silently drops an unknown form field rather than rejecting it.
+  it("never sends keep_original_sound from the audio endpoint", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToSound.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("keep_original_sound")).toBe(false);
+  });
 });
