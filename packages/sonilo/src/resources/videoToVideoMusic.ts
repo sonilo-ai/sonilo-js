@@ -24,9 +24,14 @@ export class VideoToVideoMusic {
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
-    // Omitted when unset rather than sent with a default: `ducking` is
-    // default-ON server-side, so an unset value must not go on the wire as an
-    // explicit "false" (same rule as buildSoundForm's).
+    // Omitted when unset rather than sent with a default, in both directions:
+    // `ducking` is default-ON server-side so an unset value must not go on the
+    // wire as an explicit "false", and `keepOriginalSound` is default-OFF so an
+    // unset value must not go out as an explicit "true" (same rule as
+    // buildSoundForm's).
+    if (params.keepOriginalSound !== undefined) {
+      form.set("keep_original_sound", String(params.keepOriginalSound));
+    }
     if (params.ducking !== undefined) form.set("ducking", String(params.ducking));
     if (params.preserveSpeech !== undefined) {
       form.set("preserve_speech", String(params.preserveSpeech));

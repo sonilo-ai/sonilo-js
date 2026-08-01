@@ -1,19 +1,25 @@
 import { SoniloError } from "../errors.js";
 import { toUploadBlob } from "../upload.js";
-import type { VideoToSoundParams } from "../types.js";
+import type { VideoToSoundParams, VideoToVideoSoundParams } from "../types.js";
+
+/** The widest shape either endpoint can send. Neither public param type can
+ * serve as the parameter here, because the two now differ in opposite
+ * directions: `outputFormat` exists only on `VideoToSoundParams` (audio),
+ * while `keepOriginalSound` is video-only and is therefore typed `never` on
+ * `VideoToSoundParams`. That makes each public type unassignable to the other,
+ * so the shared builder takes their union and each endpoint's own param type
+ * stays the thing that rejects the wrong field at compile time. */
+type SoundFormParams = VideoToVideoSoundParams & Pick<VideoToSoundParams, "outputFormat">;
 
 /** Build the multipart body shared by /v1/video-to-sound and
  * /v1/video-to-video-sound. The two differ only in the path they POST to and
- * in `outputFormat`, which the video endpoint does not accept — it always
- * returns an mp4. Taking the wider `VideoToSoundParams` here is what lets
- * both callers pass through: `VideoToVideoSoundParams` satisfies it
- * structurally, and with `outputFormat` absent from that type the field can
- * never be set on a video-endpoint call.
+ * in the two endpoint-specific fields described on `SoundFormParams`.
  *
- * Every optional field is omitted when unset rather than sent with a default:
- * `ducking` in particular is default-ON server-side, so an unset value must
- * not become an explicit "false" on the wire. */
-export async function buildSoundForm(params: VideoToSoundParams): Promise<FormData> {
+ * Every optional field is omitted when unset rather than sent with a default.
+ * `ducking` is default-ON server-side, so an unset value must not become an
+ * explicit "false" on the wire; `keepOriginalSound` is the mirror case —
+ * default-OFF, so an unset value must not go out as an explicit "true". */
+export async function buildSoundForm(params: SoundFormParams): Promise<FormData> {
   if ((params.video === undefined) === (params.videoUrl === undefined)) {
     throw new SoniloError("Provide exactly one of video or videoUrl");
   }
@@ -28,6 +34,9 @@ export async function buildSoundForm(params: VideoToSoundParams): Promise<FormDa
   if (params.sfxPrompt !== undefined) form.set("sfx_prompt", params.sfxPrompt);
   if (params.segments !== undefined) {
     form.set("segments", JSON.stringify(params.segments));
+  }
+  if (params.keepOriginalSound !== undefined) {
+    form.set("keep_original_sound", String(params.keepOriginalSound));
   }
   if (params.preserveSpeech !== undefined) {
     form.set("preserve_speech", String(params.preserveSpeech));

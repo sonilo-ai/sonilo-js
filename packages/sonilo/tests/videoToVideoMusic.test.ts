@@ -73,6 +73,51 @@ describe("videoToVideoMusic", () => {
     expect(form.has("variants_num")).toBe(false);
   });
 
+  it("omits keep_original_sound when unset so the server default (off) applies", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    // The new default: no voice source, so the delivered video's audio is the
+    // generated music alone. An unset flag must not go out as "false" either.
+    expect(form.has("keep_original_sound")).toBe(false);
+  });
+
+  it("sends keep_original_sound with ducking=false for the static-mix row", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({
+      videoUrl: "https://x/v.mp4",
+      keepOriginalSound: true,
+      ducking: false,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("keep_original_sound")).toBe("true");
+    expect(form.get("ducking")).toBe("false");
+  });
+
+  it("sends both keep_original_sound and preserve_speech, leaving precedence to the server", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({
+      videoUrl: "https://x/v.mp4",
+      keepOriginalSound: true,
+      preserveSpeech: true,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    // Deliberately NOT resolved client-side: the server supersedes
+    // preserve_speech with keep_original_sound and logs that it did. Dropping
+    // one here would hide the override and desync from the other SDKs.
+    expect(form.get("keep_original_sound")).toBe("true");
+    expect(form.get("preserve_speech")).toBe("true");
+  });
+
   it("generate() surfaces videos[] alongside the video alias", async () => {
     const fetch = vi
       .fn()

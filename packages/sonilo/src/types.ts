@@ -336,14 +336,21 @@ export interface VideoResult extends BaseTaskResult {
 
 /** Params for `videoToVideoMusic`.
  *
- * The delivered video's audio depends on `ducking` and `preserveSpeech`:
+ * The delivered video's audio is decided by two independent knobs:
+ * `keepOriginalSound` picks the **voice source**, `ducking` picks how that
+ * voice and the generated music are **combined**.
  *
  * | Request | Audio in the returned video |
  * | --- | --- |
- * | neither set | source speech + music ducked under it |
- * | `ducking: false` | music only |
+ * | neither set | generated music only — the source's own audio is removed |
+ * | `keepOriginalSound: true` | full original sound + music ducked under it |
+ * | `keepOriginalSound: true, ducking: false` | full original sound + static music mix |
  * | `preserveSpeech: true` | isolated vocals + music ducked under them |
- * | both (`ducking: false`) | static vocal-forward mix of vocals + music |
+ * | `preserveSpeech: true, ducking: false` | static vocal-forward mix of vocals + music |
+ *
+ * `keepOriginalSound` supersedes `preserveSpeech` — the voice source is a
+ * single choice, and keeping the whole track subsumes keeping only the
+ * isolated speech. No combination is rejected.
  *
  * The source picture is copied without re-encoding, so the input must carry
  * H.264, H.265/HEVC, VP9 or AV1 video in an mp4, mov, m4v or webm container —
@@ -357,14 +364,23 @@ export interface VideoToVideoMusicParams {
    * `videoToMusic`'s: the first `start` must be 0. Supplying these skips the
    * prompt-service plan the server would otherwise derive from `prompt`. */
   segments?: Segment[];
-  /** Duck the generated music under the source's speech — or, with
-   * `preserveSpeech`, under the isolated vocals. Default-ON server-side:
-   * leave unset to keep it on, pass `false` for music-only audio. Free and
-   * best-effort; silently falls back to music-only if the source has no
-   * usable audio track, voice isolation fails, or the duck mix fails. */
+  /** Keep the source video's whole original audio track in the result, with
+   * the generated music combined under it. Defaults to `false`, so by
+   * default the returned video's audio is the generated music ALONE and the
+   * source's own audio is removed. Supersedes `preserveSpeech`. */
+  keepOriginalSound?: boolean;
+  /** How the voice and the generated music are combined — not whether a
+   * voice is kept. Default-ON server-side: leave unset for the dynamic duck
+   * (music dips only while the voice is present), pass `false` for a static
+   * voice-forward mix at a fixed offset. Has no effect when there is no
+   * voice source, i.e. neither `keepOriginalSound` nor `preserveSpeech` is
+   * set. Free and best-effort; silently falls back to generated-audio-only
+   * if the source has no usable audio track, voice isolation fails, or the
+   * mix fails. */
   ducking?: boolean;
-  /** Keep the source speech/vocals in the output. Both this and the legacy
-   * `isolateVocals` are accepted and OR'd server-side. */
+  /** Keep only the source's isolated speech (not the whole track) in the
+   * output. Both this and the legacy `isolateVocals` are accepted and OR'd
+   * server-side. Superseded by `keepOriginalSound`. */
   preserveSpeech?: boolean;
   /** @deprecated Legacy alias for `preserveSpeech`. */
   isolateVocals?: boolean;
@@ -383,11 +399,18 @@ export interface VideoToVideoSfxParams {
 }
 
 /** Params for `videoToVideoSound`, and the base every `videoToSound` param
- * also has. The two endpoints are identical except that only the audio one
- * accepts `outputFormat` — `videoToVideoSound` always muxes the mix into an
- * mp4 — so `VideoToSoundParams` extends this rather than the two sharing a
- * single type, and passing `outputFormat` to the video endpoint is a
- * compile error instead of a value the server silently ignores. */
+ * also has. The two endpoints differ in exactly two fields, one in each
+ * direction, and both are enforced at the type level rather than left to the
+ * server to silently ignore:
+ *
+ * - `outputFormat` is **audio-only** — added by `VideoToSoundParams` below, so
+ *   it simply does not exist on this type.
+ * - `keepOriginalSound` is **video-only** — declared here, so
+ *   `VideoToSoundParams` inherits it and has to forbid it explicitly with
+ *   `?: never` (the inheritance runs the other way, so it cannot just be
+ *   omitted the way `outputFormat` is).
+ *
+ * Passing either field to the wrong endpoint is therefore a compile error. */
 export interface VideoToVideoSoundParams {
   video?: VideoInput;
   videoUrl?: string;
@@ -397,10 +420,20 @@ export interface VideoToVideoSoundParams {
   sfxPrompt?: string;
   /** Per-segment SFX descriptions; must start at 0 and be contiguous. */
   segments?: SfxSegment[];
-  /** Keep the source speech in the result. */
+  /** Keep the source video's whole original audio track in the result, with
+   * the generated music + SFX combined under it. Defaults to `false`, so by
+   * default the returned video's audio is the generated music and sound
+   * effects ALONE and the source's own audio is removed — and the result
+   * carries no `music_processed` stem, since with no voice source there is no
+   * processed track. Supersedes `preserveSpeech`. Video endpoint only. */
+  keepOriginalSound?: boolean;
+  /** Keep only the source's isolated speech (not the whole track) in the
+   * result. Superseded by `keepOriginalSound`. */
   preserveSpeech?: boolean;
-  /** Duck the generated music under the source speech. Default-ON
-   * server-side: leave unset to keep it on, pass `false` to opt out. */
+  /** How the voice and the generated bed are combined — not whether a voice
+   * is kept. Default-ON server-side: leave unset for the dynamic duck, pass
+   * `false` for a static voice-forward mix. Has no effect when there is no
+   * voice source. */
   ducking?: boolean;
   /** How many distinct variants to generate in one request (1-10, default
    * 1). Cost scales linearly, and values above 1 are never covered by the
@@ -418,6 +451,13 @@ export interface VideoToSoundParams extends VideoToVideoSoundParams {
    * and `sfx` stems keep their native formats. Not available on
    * `videoToVideoSound`, which always returns an mp4. */
   outputFormat?: "wav" | "m4a" | "mp3";
+  /** Not available on this endpoint. `keepOriginalSound` only means something
+   * when the deliverable is a video whose own audio could be preserved;
+   * `videoToSound` returns generated audio, and its default already keeps the
+   * source voice in the mix. Typed `never` so passing it is a compile error
+   * rather than a field the server silently drops — the mirror of how
+   * `outputFormat` is kept off `videoToVideoSound`. */
+  keepOriginalSound?: never;
 }
 
 /** One variant's outputs on a `videoToSound` / `videoToVideoSound` result.
