@@ -107,3 +107,39 @@ describe("videoToVideoMusic", () => {
     ).rejects.toThrow(/exactly one/);
   });
 });
+
+describe("videoToVideoMusic ducking + segments", () => {
+  it("omits ducking when unset so the server default-ON stays on", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("ducking")).toBe(false);
+  });
+
+  it("sends ducking=false when explicitly opted out", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({ videoUrl: "https://x/v.mp4", ducking: false });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("ducking")).toBe("false");
+  });
+
+  it("serializes segments as JSON, matching videoToMusic", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    const segments = [
+      { start: 0, prompt: "sparse pads", label: "intro" as const },
+      { start: 30, prompt: "add drums", label: "verse" as const },
+    ];
+    await client.videoToVideoMusic.submit({ videoUrl: "https://x/v.mp4", segments });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(JSON.parse(form.get("segments") as string)).toEqual(segments);
+  });
+});

@@ -54,6 +54,7 @@ export type {
   VideoToMusicParams,
   VideoToSfxParams,
   VideoToSoundParams,
+  VideoToVideoSoundParams,
   VideoToVideoMusicParams,
   VideoToVideoSfxParams,
   WaitOptions,

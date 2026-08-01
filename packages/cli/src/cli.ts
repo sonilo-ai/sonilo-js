@@ -49,7 +49,8 @@ text-to-music options:
   --prompt <text>       Required. What the music should sound like.
   --duration <seconds>  Required. Track length.
   --output <path>       Where to save the audio (default: ./output.<ext>)
-  --format <m4a|wav>    Output container. wav forces --async. Default: m4a
+  --format <m4a|wav|mp3>  Output container. Anything but m4a forces
+                        --async. mp3 is 320 kbps. Default: m4a
   --async               Submit and poll instead of streaming the response
   --segments <json>     Per-segment prompts: [{start, prompt, label?}, ...]
                         (see "Segments" below)
@@ -65,7 +66,8 @@ video-to-music options:
   --video-url <url>           Required (or --video). Remote video to score.
   --prompt <text>              Optional creative direction for the music.
   --output <path>              Where to save the audio (default: ./output.<ext>)
-  --format <m4a|wav>           Output container. wav forces --async.
+  --format <m4a|wav|mp3>       Output container. Anything but m4a forces
+                               --async. mp3 is 320 kbps.
   --preserve-speech             Keep source speech in the mix. Forces --async.
   --isolate-vocals              Legacy alias for --preserve-speech. Forces --async.
   --async                       Submit and poll instead of streaming
@@ -563,10 +565,13 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
-  const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
+  const format = parseFormat(values.format, ["m4a", "wav", "mp3"] as const, "m4a");
   const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
-  // variantsNum > 1 requires the async task API, same as outputFormat "wav".
-  const useAsync = values.async === true || format === "wav" || (variantsNum ?? 1) > 1;
+  // variantsNum > 1 requires the async task API, as does any non-m4a
+  // container -- wav and mp3 are both finalize-time transcodes, and m4a is
+  // the only format the stream itself carries.
+  const useAsync =
+    values.async === true || format !== "m4a" || (variantsNum ?? 1) > 1;
   const segments = (await readSegments("text-to-music", values.segments, MUSIC_SEGMENTS)) as
     | Segment[]
     | undefined;
@@ -608,7 +613,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
-  const format = parseFormat(values.format, ["m4a", "wav"] as const, "m4a");
+  const format = parseFormat(values.format, ["m4a", "wav", "mp3"] as const, "m4a");
   // --isolate-vocals and --preserve-speech are ONE feature under two names, not
   // two independent options: the backend ORs them and normalizes onto a single
   // flag (preserve_speech is the current public name, isolate_vocals the legacy
@@ -623,7 +628,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   // variantsNum > 1 requires the async task API, same as the other async-only options.
   const useAsync =
     values.async === true ||
-    format === "wav" ||
+    format !== "m4a" ||
     isolateVocals ||
     preserveSpeech ||
     (variantsNum ?? 1) > 1;

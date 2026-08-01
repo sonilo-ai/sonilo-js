@@ -77,10 +77,13 @@ export interface TextToMusicParams {
   prompt: string;
   duration: number;
   segments?: Segment[];
-  /** "stream" (default) or "async" (required by `submit()` and `output_format: "wav"`). */
+  /** "stream" (default) or "async" (required by `submit()` and by any
+   * `outputFormat` other than the m4a default). */
   mode?: "stream" | "async";
-  /** Container for the async result. `wav` requires `mode: "async"`. Defaults to m4a server-side. */
-  outputFormat?: "m4a" | "wav";
+  /** Container for the async result. `wav` and `mp3` (320 kbps) are
+   * finalize-time transcodes and require `mode: "async"`; m4a is what the
+   * stream itself carries. Defaults to m4a server-side. */
+  outputFormat?: "m4a" | "wav" | "mp3";
   /** How many distinct music variants to generate in one request (1-10,
    * default 1). Cost scales linearly, and values above 1 are never covered
    * by the free trial. Values above 1 require `mode: "async"` — only
@@ -127,8 +130,9 @@ export interface VideoToMusicParams {
    * `isolateVocals`; both are accepted and OR'd server-side. Requires
    * `mode: "async"` (auto-selected by `submit()`). */
   preserveSpeech?: boolean;
-  /** Container for the async result. `wav` requires async. Defaults to m4a. */
-  outputFormat?: "m4a" | "wav";
+  /** Container for the async result. `wav` and `mp3` (320 kbps) are
+   * finalize-time transcodes and require async. Defaults to m4a. */
+  outputFormat?: "m4a" | "wav" | "mp3";
   /** Duck the generated music under the source voice at finalize time.
    * Default-ON server-side in async mode: leave unset to keep it on, pass
    * `false` to opt out. Free, best-effort; only valid on `submit()`. */
@@ -330,10 +334,35 @@ export interface VideoResult extends BaseTaskResult {
   duration_seconds?: number;
 }
 
+/** Params for `videoToVideoMusic`.
+ *
+ * The delivered video's audio depends on `ducking` and `preserveSpeech`:
+ *
+ * | Request | Audio in the returned video |
+ * | --- | --- |
+ * | neither set | source speech + music ducked under it |
+ * | `ducking: false` | music only |
+ * | `preserveSpeech: true` | isolated vocals + music ducked under them |
+ * | both (`ducking: false`) | static vocal-forward mix of vocals + music |
+ *
+ * The source picture is copied without re-encoding, so the input must carry
+ * H.264, H.265/HEVC, VP9 or AV1 video in an mp4, mov, m4v or webm container —
+ * animated gif and VP8 webm are rejected. Maximum input duration is 360
+ * seconds. */
 export interface VideoToVideoMusicParams {
   video?: VideoInput;
   videoUrl?: string;
   prompt?: string;
+  /** How the music should develop over time. Same shape as
+   * `videoToMusic`'s: the first `start` must be 0. Supplying these skips the
+   * prompt-service plan the server would otherwise derive from `prompt`. */
+  segments?: Segment[];
+  /** Duck the generated music under the source's speech — or, with
+   * `preserveSpeech`, under the isolated vocals. Default-ON server-side:
+   * leave unset to keep it on, pass `false` for music-only audio. Free and
+   * best-effort; silently falls back to music-only if the source has no
+   * usable audio track, voice isolation fails, or the duck mix fails. */
+  ducking?: boolean;
   /** Keep the source speech/vocals in the output. Both this and the legacy
    * `isolateVocals` are accepted and OR'd server-side. */
   preserveSpeech?: boolean;
@@ -353,9 +382,13 @@ export interface VideoToVideoSfxParams {
   segments?: SfxSegment[];
 }
 
-/** Params for `videoToSound` and `videoToVideoSound`. Both endpoints take the
- * identical form, so they share one params type. */
-export interface VideoToSoundParams {
+/** Params for `videoToVideoSound`, and the base every `videoToSound` param
+ * also has. The two endpoints are identical except that only the audio one
+ * accepts `outputFormat` — `videoToVideoSound` always muxes the mix into an
+ * mp4 — so `VideoToSoundParams` extends this rather than the two sharing a
+ * single type, and passing `outputFormat` to the video endpoint is a
+ * compile error instead of a value the server silently ignores. */
+export interface VideoToVideoSoundParams {
   video?: VideoInput;
   videoUrl?: string;
   /** Style hint for the generated music bed. */
@@ -375,6 +408,16 @@ export interface VideoToSoundParams {
    * async, so no extra `mode` gating applies. The result's `outputs[]` gets
    * one entry per variant. */
   variantsNum?: number;
+}
+
+/** Params for `videoToSound`. Everything `videoToVideoSound` takes, plus the
+ * delivery container for the combined track. */
+export interface VideoToSoundParams extends VideoToVideoSoundParams {
+  /** Container for the combined music + SFX track. Defaults to `wav`;
+   * `mp3` is 320 kbps. Applies to the combined output only — the `music`
+   * and `sfx` stems keep their native formats. Not available on
+   * `videoToVideoSound`, which always returns an mp4. */
+  outputFormat?: "wav" | "m4a" | "mp3";
 }
 
 /** One variant's outputs on a `videoToSound` / `videoToVideoSound` result.

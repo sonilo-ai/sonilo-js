@@ -44,7 +44,7 @@ export class VideoToMusic {
   /**
    * Submit an async video-to-music task; poll its result with
    * `client.tasks.wait<MusicTaskResult>(task.task_id)`. Required for
-   * `isolateVocals`/`preserveSpeech`, `outputFormat: "wav"`, and
+   * `isolateVocals`/`preserveSpeech`, a non-m4a `outputFormat`, and
    * `variantsNum` above 1 — the backend rejects all of these on the plain
    * stream, and they only ever run in async mode.
    */
@@ -57,7 +57,10 @@ export class VideoToMusic {
       params.isolateVocals ||
       params.preserveSpeech ||
       params.ducking !== undefined ||
-      params.outputFormat === "wav" ||
+      // Any non-m4a container is a finalize-time transcode, so it needs
+      // async. Checking != "m4a" rather than == "wav" keeps this correct
+      // as formats are added (mp3 landed after the original check).
+      (params.outputFormat !== undefined && params.outputFormat !== "m4a") ||
       (params.variantsNum !== undefined && params.variantsNum > 1);
     // submit() always wants an async task ack, never a stream. Default to
     // async; only object if the caller explicitly asked for stream while
@@ -65,7 +68,7 @@ export class VideoToMusic {
     if (mode === undefined) mode = "async";
     if (needsAsync && mode !== "async") {
       throw new SoniloError(
-        'isolateVocals/preserveSpeech/ducking/outputFormat "wav"/variantsNum > 1 require mode: "async"',
+        'isolateVocals/preserveSpeech/ducking/outputFormat other than "m4a"/variantsNum > 1 require mode: "async"',
       );
     }
     const form = new FormData();

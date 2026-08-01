@@ -36,7 +36,7 @@ export class TextToMusic {
   /**
    * Submit an async text-to-music task; poll with
    * `client.tasks.wait<MusicTaskResult>(task.task_id)`. Required for
-   * `outputFormat: "wav"` and `variantsNum` above 1. `stream()`/`generate()`
+   * a non-m4a `outputFormat` and `variantsNum` above 1. `stream()`/`generate()`
    * remain the streaming path.
    */
   async submit(params: TextToMusicParams): Promise<SfxTask> {
