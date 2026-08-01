@@ -79,7 +79,8 @@ Run `sonilo --help` for the full option list, including `--preserve-speech` for
 `video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
 `--no-ducking` / `--stem` for the `video-to-sound` commands, `--languages` /
 `--timeout` for `dubbing`, `--variants` for the five commands that take it, and
-the `--format` options each command accepts.
+the `--format` options each command accepts. Music commands take `m4a`
+(default), `wav` or `mp3` (320 kbps); anything but `m4a` implies `--async`.
 
 `video-to-sound` and `video-to-video-sound` return a combined render plus
 three individual layers — `music`, `music_processed`, and `sfx`. `--stem` (one
@@ -153,7 +154,7 @@ you run it:
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
-`--format wav` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
+a non-`m4a` `--format` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
 above 1) submits an async task and polls it instead of streaming the
 response — matching how the underlying
 [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
@@ -183,7 +184,7 @@ sonilo video-to-sound --video clip.mp4 --variants 2 --output mix.wav --stem musi
 ```
 
 On `text-to-music` / `video-to-music`, `--variants` above 1 forces `--async` —
-same as `--format wav` and `--preserve-speech` — since the plain streaming
+same as a non-`m4a` `--format` and `--preserve-speech` — since the plain streaming
 response can only ever carry one track. `video-to-video-music`,
 `video-to-sound` and `video-to-video-sound` are already async-only, so
 `--variants` needs no extra flag there.

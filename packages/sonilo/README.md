@@ -92,7 +92,8 @@ The async `submit()` path also accepts:
 - `ducking` — duck the generated music under the source voice. It is **on by
   default** in async mode; pass `ducking: false` to opt out. When it runs, the
   result gains a `ducked` array alongside `audio`.
-- `outputFormat` — `"m4a"` (default) or `"wav"` (requires async mode).
+- `outputFormat` — `"m4a"` (default), `"wav"`, or `"mp3"` (320 kbps).
+  Anything but `m4a` is a finalize-time transcode and requires async mode.
 
 ```ts
 const task = await client.videoToMusic.submit({
@@ -159,11 +160,14 @@ import { writeFile } from "node:fs/promises";
 
 const client = new SoniloClient();
 
-// Score music into the video (optionally keep the original speech)
+// Score music into the video. By default the returned video keeps the
+// source's speech with the music ducked under it — pass `ducking: false`
+// for music-only audio.
 const music = await client.videoToVideoMusic.generate({
   video: "./my_video.mp4", // Node path; File/Blob in the browser, or `videoUrl`
   prompt: "cinematic orchestral swell",
   preserveSpeech: true,
+  // segments: [{ start: 0, prompt: "sparse pads" }, { start: 30, prompt: "add drums" }],
 });
 await writeFile("scored.mp4", await download(music.video!));
 
@@ -210,6 +214,13 @@ await writeFile("sfx.wav", await download(result.sfx));
 `preserveSpeech: true` keeps the speech from the source video, and `ducking`
 (on by default) dips the music under it — pass `ducking: false` to opt out.
 `segments` takes the same `{ start, end, prompt }` list as `videoToSfx`.
+
+`videoToSound` also takes `outputFormat` — `"wav"` (default), `"m4a"` or
+`"mp3"` — which applies to the combined track only; the `music` and `sfx`
+stems keep their native formats. `videoToVideoSound` does not take it: that
+endpoint always muxes the mix into an mp4, and its params type
+(`VideoToVideoSoundParams`) omits the field so passing it is a compile
+error.
 Input videos may be at most 180 seconds long.
 
 Use `submit()` instead of `generate()` to get a `task_id` back immediately and

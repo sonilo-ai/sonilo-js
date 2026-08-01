@@ -216,3 +216,38 @@ describe("videoToVideoSound", () => {
     expect(form.get("variants_num")).toBe("2");
   });
 });
+
+describe("videoToSound outputFormat", () => {
+  it("sends output_format on the audio endpoint", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToSound.submit({ videoUrl: "https://x/v.mp4", outputFormat: "mp3" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("output_format")).toBe("mp3");
+  });
+
+  it("omits output_format when unset so the server wav default stands", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToSound.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("output_format")).toBe(false);
+  });
+
+  // videoToVideoSound takes VideoToVideoSoundParams, which has no
+  // outputFormat -- that endpoint always returns an mp4. The type is the
+  // guard; this asserts nothing leaks onto the wire either.
+  it("never sends output_format from the video endpoint", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoSound.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("output_format")).toBe(false);
+  });
+});
