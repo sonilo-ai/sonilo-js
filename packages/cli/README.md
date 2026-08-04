@@ -208,6 +208,25 @@ from the very first call.** This is deliberate — dubbing charges `video
 duration × number of languages`, so a single free run on it would be worth
 far more than the free allowance on every other command combined.
 
+## Rate limits
+
+Two separate limits return `HTTP 429`, and they want opposite handling. The
+CLI prints the API's own sentence, so the wording says which one you hit:
+
+```
+sonilo: HTTP 429: Rate limit exceeded: your account allows 60 requests per minute. Rejected requests count toward the limit too, so wait for the next minute window (up to 60 sec) rather than retrying right away. To raise your limit, contact info@sonilo.com. (rate_limit_exceeded)
+sonilo: HTTP 429: Too many concurrent generations: 5 of 5 in progress. Wait for one to finish before starting another. To raise your limit, contact info@sonilo.com. (rate_limit_exceeded)
+```
+
+The first means calls are going out too fast. The counter runs on a fixed
+60-second window and rejected calls count toward it too, so wait the window
+out instead of retrying inside it. The second means every generation slot is
+busy — waiting alone frees nothing, a running generation has to finish first.
+
+`sonilo account` prints the account's own `rpm_limit` and
+`concurrency_limit`; the numbers above are the standard-tier defaults. Email
+info@sonilo.com to raise either.
+
 ## Programmatic use
 
 This package is a thin CLI wrapper. For direct API access from Node.js or the
