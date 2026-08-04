@@ -127,6 +127,21 @@ describe("errorFromResponse", () => {
     expect((err as RateLimitError).retryAfter).toBeUndefined();
   });
 
+  // Two limits share this status and want opposite handling — slow down, or
+  // wait for a running generation to finish. The code is identical for both,
+  // so the message is the only thing that tells them apart: it has to survive
+  // whole, numbers and contact address included.
+  it.each([
+    "Rate limit exceeded: your account allows 60 requests per minute. Rejected requests count toward the limit too, so wait for the next minute window (up to 60 sec) rather than retrying right away. To raise your limit, contact info@sonilo.com.",
+    "Too many concurrent generations: 5 of 5 in progress. Wait for one to finish before starting another. To raise your limit, contact info@sonilo.com.",
+  ])("carries the 429 message through verbatim: %s", async (message) => {
+    const err = await errorFromResponse(
+      jsonResponse(429, { code: "rate_limit_exceeded", message }),
+    );
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect(err.message).toBe(`HTTP 429: ${message}`);
+  });
+
   it.each([400, 413, 422])("maps %i to BadRequestError exposing legacy detail", async (status) => {
     const err = await errorFromResponse(jsonResponse(status, { detail: "bad input" }));
     expect(err).toBeInstanceOf(BadRequestError);
