@@ -459,16 +459,16 @@ The class and `.code` (`rate_limit_exceeded`) are identical for both — only
 the message tells them apart:
 
 - **Requests per minute** — `Rate limit exceeded: your account allows 60
-  requests per minute. Rejected requests count toward the limit too, so wait
-  for the next minute window (up to 60 sec) rather than retrying right away.
-  To raise your limit, contact info@sonilo.com.` Calls are going out too fast.
-  The counter runs on a fixed 60-second window, so back off past the window
-  boundary instead of retrying inside it.
+  requests per minute. Please retry after 1 minute. To raise your limit,
+  please contact info@sonilo.com.` Calls are going out too fast. The counter
+  runs on a fixed 60-second window and rejected requests count toward it too,
+  so a retry inside the window cannot succeed — a full minute always clears
+  it, whatever your phase within the window.
 - **Concurrent generations** — `Too many concurrent generations: 5 of 5 in
-  progress. Wait for one to finish before starting another. To raise your
-  limit, contact info@sonilo.com.` Every generation slot is busy. Waiting
-  alone frees nothing — retry when one of your own in-flight generations
-  finishes, not on a timer.
+  progress. Please wait for one to finish before starting another. To raise
+  your limit, please contact info@sonilo.com.` Every generation slot is busy.
+  Waiting alone frees nothing — retry when one of your own in-flight
+  generations finishes, not on a timer.
 
 The numbers are the account's own limits; `account.services()` reports them
 as `rpm_limit` and `concurrency_limit`. Email info@sonilo.com to raise

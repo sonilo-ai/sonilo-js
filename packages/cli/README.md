@@ -214,8 +214,8 @@ Two separate limits return `HTTP 429`, and they want opposite handling. The
 CLI prints the API's own sentence, so the wording says which one you hit:
 
 ```
-sonilo: HTTP 429: Rate limit exceeded: your account allows 60 requests per minute. Rejected requests count toward the limit too, so wait for the next minute window (up to 60 sec) rather than retrying right away. To raise your limit, contact info@sonilo.com. (rate_limit_exceeded)
-sonilo: HTTP 429: Too many concurrent generations: 5 of 5 in progress. Wait for one to finish before starting another. To raise your limit, contact info@sonilo.com. (rate_limit_exceeded)
+sonilo: HTTP 429: Rate limit exceeded: your account allows 60 requests per minute. Please retry after 1 minute. To raise your limit, please contact info@sonilo.com. (rate_limit_exceeded)
+sonilo: HTTP 429: Too many concurrent generations: 5 of 5 in progress. Please wait for one to finish before starting another. To raise your limit, please contact info@sonilo.com. (rate_limit_exceeded)
 ```
 
 The first means calls are going out too fast. The counter runs on a fixed
