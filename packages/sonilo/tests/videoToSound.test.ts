@@ -39,7 +39,7 @@ describe("videoToSound", () => {
     expect(form.has("isolate_vocals")).toBe(false);
   });
 
-  it("omits ducking when unset so the server default (on) applies", async () => {
+  it("omits ducking when unset so the server default (off) applies", async () => {
     const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse(ACK, 202),
     );

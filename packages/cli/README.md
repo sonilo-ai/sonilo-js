@@ -77,7 +77,7 @@ sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
 
 Run `sonilo --help` for the full option list, including `--preserve-speech` for
 `video-to-music` and `video-to-video-music`, `--music-prompt` / `--sfx-prompt` /
-`--no-ducking` / `--stem` for the `video-to-sound` commands, `--languages` /
+`--ducking` / `--stem` for the `video-to-sound` commands, `--languages` /
 `--timeout` for `dubbing`, `--variants` for the five commands that take it, and
 the `--format` options each command accepts. Music commands take `m4a`
 (default), `wav` or `mp3` (320 kbps); anything but `m4a` implies `--async`.

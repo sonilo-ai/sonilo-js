@@ -89,9 +89,10 @@ The async `submit()` path also accepts:
 
 - `preserveSpeech` — keep the source speech/vocals in the result (see
   [Preserve speech](#preserve-speech-async) above).
-- `ducking` — duck the generated music under the source voice. It is **on by
-  default** in async mode; pass `ducking: false` to opt out. When it runs, the
-  result gains a `ducked` array alongside `audio`.
+- `ducking` — duck the generated music under the source voice. It is **off by
+  default**; pass `ducking: true` to run it. When it runs, the result gains a
+  `ducked` array alongside `audio` — the `audio` track itself is the same
+  either way.
 - `outputFormat` — `"m4a"` (default), `"wav"`, or `"mp3"` (320 kbps).
   Anything but `m4a` is a finalize-time transcode and requires async mode.
 
@@ -100,7 +101,7 @@ const task = await client.videoToMusic.submit({
   video: "./my_video.mp4",
   preserveSpeech: true,
   outputFormat: "wav",
-  // ducking is on by default in async — set `false` to disable
+  ducking: true, // off by default — opt in to also get the `ducked` track
 });
 const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
 if (result.ducked) {
@@ -160,9 +161,10 @@ import { writeFile } from "node:fs/promises";
 
 const client = new SoniloClient();
 
-// Score music into the video. By default the returned video keeps the
-// source's speech with the music ducked under it — pass `ducking: false`
-// for music-only audio.
+// Score music into the video. By default the returned video's audio is the
+// generated music alone, with the source's own audio removed — pass
+// `keepOriginalSound: true` to keep the source track (statically mixed, or
+// ducked under the music with `ducking: true`).
 const music = await client.videoToVideoMusic.generate({
   video: "./my_video.mp4", // Node path; File/Blob in the browser, or `videoUrl`
   prompt: "cinematic orchestral swell",
@@ -211,9 +213,11 @@ await writeFile("music.m4a", await download(result.music));
 await writeFile("sfx.wav", await download(result.sfx));
 ```
 
-`preserveSpeech: true` keeps the speech from the source video, and `ducking`
-(on by default) dips the music under it — pass `ducking: false` to opt out.
-`segments` takes the same `{ start, end, prompt }` list as `videoToSfx`.
+By default the result is the generated music + effects alone — the source
+video's own speech is not carried into it. `preserveSpeech: true` brings in the
+isolated speech, and `ducking: true` (off by default) brings in the whole
+original track with the music dipped under it. `segments` takes the same
+`{ start, end, prompt }` list as `videoToSfx`.
 
 `videoToSound` also takes `outputFormat` — `"wav"` (default), `"m4a"` or
 `"mp3"` — which applies to the combined track only; the `music` and `sfx`
@@ -269,8 +273,7 @@ optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
 codes are `en, zh_cn, ja, ko, pt, es, de, fr, it, ru`. The optional `ducking`
 boolean (default off, free) ducks the background music/effects bed under the
 dubbed voice while it speaks; when off the bed is kept at a constant level.
-Note this default is the opposite of video-to-music's `ducking`, which is on
-by default.
+Every endpoint's `ducking` is default-off, so this one is no exception.
 
 Dubbing is async-only, and the source video may be at most 180 seconds long.
 You are billed per language. Dubbing has **no free trial allowance** — unlike

@@ -106,9 +106,16 @@ video-to-sound / video-to-video-sound options (both async-only):
                           video-to-video-sound only; supersedes
                           --preserve-speech.
   --preserve-speech       Keep only the source's isolated speech in the result.
-  --no-ducking            Combine the voice and the generated bed as a static
-                          mix instead of a dynamic duck. No effect unless
-                          --keep-original-sound or --preserve-speech is set.
+  --ducking               Duck the generated bed under the voice instead of
+                          mixing it in at a static level. On video-to-sound
+                          this is also what pulls the source's own speech into
+                          the result at all — without it the result is the
+                          generated music + effects ALONE. On
+                          video-to-video-sound it only picks the mix style, so
+                          it has no effect unless --keep-original-sound or
+                          --preserve-speech is set.
+  --no-ducking            Explicit opt-out. Same as the default; kept so
+                          existing scripts keep working.
   --output <path>         Where to save the result (default: ./output.<ext>)
   --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
                           (see "Segments" below)
@@ -140,9 +147,11 @@ video-to-video-music options (async-only, writes a video):
                           --preserve-speech.
   --preserve-speech       Keep only the source's isolated speech in the result.
   --isolate-vocals        Legacy alias for --preserve-speech.
-  --no-ducking            Combine the voice and the generated music as a static
-                          mix instead of a dynamic duck. No effect unless
+  --ducking               Duck the generated music under the voice instead of
+                          mixing it in at a static level. No effect unless
                           --keep-original-sound or --preserve-speech is set.
+  --no-ducking            Explicit opt-out. Same as the default; kept so
+                          existing scripts keep working.
   --output <path>         Where to save the video (default: ./output.mp4)
   --variants <n>          How many distinct variants to generate (1-10,
                           default 1). Cost scales linearly; above 1 is never
@@ -736,11 +745,32 @@ export async function runVideoToSfx(client: SoniloClient, argv: string[]): Promi
   await writeAudio(await download(media), outputPath(values.output, format));
 }
 
+/** Resolve --ducking / --no-ducking into the value to send, or `undefined` to
+ * let the server default stand.
+ *
+ * `ducking` used to be default-ON server-side, so the only thing worth
+ * expressing was turning it off and --no-ducking was the only flag. It is now
+ * default-OFF, which makes --ducking the useful direction. --no-ducking is
+ * kept because removing it would turn every existing script that passes it
+ * into a hard "unknown option" failure; it now sends an explicit `false`,
+ * which is what the server would have done anyway.
+ *
+ * Passing both is a contradiction with no sensible winner, so it fails rather
+ * than silently picking one. */
+function resolveDucking(on?: boolean, off?: boolean): boolean | undefined {
+  if (on === true && off === true) {
+    fail("pass at most one of --ducking or --no-ducking");
+  }
+  if (on === true) return true;
+  if (off === true) return false;
+  return undefined;
+}
+
 /** Shared flag parsing for the two combined music + SFX endpoints.
  *
- * Each server default is only overridden when the user says so: `ducking` is
- * default-ON so it is sent only for --no-ducking, and `keepOriginalSound` is
- * default-OFF so it is sent only for --keep-original-sound.
+ * Each server default is only overridden when the user says so: both `ducking`
+ * and `keepOriginalSound` are default-OFF, so each is sent only for its own
+ * opt-in flag. See `resolveDucking` for why --no-ducking still parses.
  *
  * Returns the **video** endpoint's param type, because that is the one
  * carrying `keepOriginalSound`. `runVideoToSound` destructures that field back
@@ -764,6 +794,7 @@ async function parseSoundArgs(
       "sfx-prompt": { type: "string" },
       "keep-original-sound": { type: "boolean" },
       "preserve-speech": { type: "boolean" },
+      ducking: { type: "boolean" },
       "no-ducking": { type: "boolean" },
       output: { type: "string" },
       segments: { type: "string" },
@@ -785,7 +816,7 @@ async function parseSoundArgs(
       sfxPrompt: values["sfx-prompt"],
       keepOriginalSound: values["keep-original-sound"] === true ? true : undefined,
       preserveSpeech: values["preserve-speech"] === true ? true : undefined,
-      ducking: values["no-ducking"] === true ? false : undefined,
+      ducking: resolveDucking(values.ducking, values["no-ducking"]),
       segments,
       variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
     },
@@ -945,6 +976,7 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
       "keep-original-sound": { type: "boolean" },
       "preserve-speech": { type: "boolean" },
       "isolate-vocals": { type: "boolean" },
+      ducking: { type: "boolean" },
       "no-ducking": { type: "boolean" },
       output: { type: "string" },
       variants: { type: "string" },
@@ -955,8 +987,8 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
   }
   // Every flag is sent only when set, so each server default stands on its
   // own: preserve_speech is OR'd with the legacy isolate_vocals (an explicit
-  // `false` would be noise), keep_original_sound is default-OFF, and ducking
-  // is default-ON — which is why only --no-ducking is expressible.
+  // `false` would be noise), and keep_original_sound and ducking are both
+  // default-OFF, so each rides its own opt-in flag.
   const task = await client.videoToVideoMusic.submit({
     video: values.video,
     videoUrl: values["video-url"],
@@ -964,7 +996,7 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
     keepOriginalSound: values["keep-original-sound"] === true ? true : undefined,
     preserveSpeech: values["preserve-speech"] === true ? true : undefined,
     isolateVocals: values["isolate-vocals"] === true ? true : undefined,
-    ducking: values["no-ducking"] === true ? false : undefined,
+    ducking: resolveDucking(values.ducking, values["no-ducking"]),
     variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
   });
   await waitAndWriteVideo(client, task, values.output);

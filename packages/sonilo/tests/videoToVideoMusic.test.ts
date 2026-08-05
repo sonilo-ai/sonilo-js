@@ -154,7 +154,7 @@ describe("videoToVideoMusic", () => {
 });
 
 describe("videoToVideoMusic ducking + segments", () => {
-  it("omits ducking when unset so the server default-ON stays on", async () => {
+  it("omits ducking when unset so the server default (off) applies", async () => {
     const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ task_id: "t", status: "processing" }),
     );

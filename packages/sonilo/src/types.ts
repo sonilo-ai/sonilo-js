@@ -134,8 +134,9 @@ export interface VideoToMusicParams {
    * finalize-time transcodes and require async. Defaults to m4a. */
   outputFormat?: "m4a" | "wav" | "mp3";
   /** Duck the generated music under the source voice at finalize time.
-   * Default-ON server-side in async mode: leave unset to keep it on, pass
-   * `false` to opt out. Free, best-effort; only valid on `submit()`. */
+   * Default-OFF server-side: leave unset to skip it, pass `true` to run it,
+   * which adds a `ducked` track alongside the unchanged clean `audio`. Free,
+   * best-effort; only valid on `submit()`. */
   ducking?: boolean;
   /** How many distinct music variants to generate in one request (1-10,
    * default 1). Cost scales linearly, and values above 1 are never covered
@@ -343,10 +344,10 @@ export interface VideoResult extends BaseTaskResult {
  * | Request | Audio in the returned video |
  * | --- | --- |
  * | neither set | generated music only — the source's own audio is removed |
- * | `keepOriginalSound: true` | full original sound + music ducked under it |
- * | `keepOriginalSound: true, ducking: false` | full original sound + static music mix |
- * | `preserveSpeech: true` | isolated vocals + music ducked under them |
- * | `preserveSpeech: true, ducking: false` | static vocal-forward mix of vocals + music |
+ * | `keepOriginalSound: true` | full original sound + static music mix |
+ * | `keepOriginalSound: true, ducking: true` | full original sound + music ducked under it |
+ * | `preserveSpeech: true` | static vocal-forward mix of vocals + music |
+ * | `preserveSpeech: true, ducking: true` | isolated vocals + music ducked under them |
  *
  * `keepOriginalSound` supersedes `preserveSpeech` — the voice source is a
  * single choice, and keeping the whole track subsumes keeping only the
@@ -370,13 +371,13 @@ export interface VideoToVideoMusicParams {
    * source's own audio is removed. Supersedes `preserveSpeech`. */
   keepOriginalSound?: boolean;
   /** How the voice and the generated music are combined — not whether a
-   * voice is kept. Default-ON server-side: leave unset for the dynamic duck
-   * (music dips only while the voice is present), pass `false` for a static
-   * voice-forward mix at a fixed offset. Has no effect when there is no
-   * voice source, i.e. neither `keepOriginalSound` nor `preserveSpeech` is
-   * set. Free and best-effort; silently falls back to generated-audio-only
-   * if the source has no usable audio track, voice isolation fails, or the
-   * mix fails. */
+   * voice is kept. Default-OFF server-side: leave unset for a static
+   * voice-forward mix at a fixed offset, pass `true` for the dynamic duck
+   * (music dips only while the voice is present). Has no effect when there
+   * is no voice source, i.e. neither `keepOriginalSound` nor `preserveSpeech`
+   * is set. Free and best-effort; silently falls back to
+   * generated-audio-only if the source has no usable audio track, voice
+   * isolation fails, or the mix fails. */
   ducking?: boolean;
   /** Keep only the source's isolated speech (not the whole track) in the
    * output. Both this and the legacy `isolateVocals` are accepted and OR'd
@@ -430,10 +431,16 @@ export interface VideoToVideoSoundParams {
   /** Keep only the source's isolated speech (not the whole track) in the
    * result. Superseded by `keepOriginalSound`. */
   preserveSpeech?: boolean;
-  /** How the voice and the generated bed are combined — not whether a voice
-   * is kept. Default-ON server-side: leave unset for the dynamic duck, pass
-   * `false` for a static voice-forward mix. Has no effect when there is no
-   * voice source. */
+  /** On `videoToVideoSound`, how the voice and the generated bed are
+   * combined — not whether a voice is kept: default-OFF server-side, so an
+   * unset value gives a static voice-forward mix and `true` gives the dynamic
+   * duck, and either way it has no effect without a voice source.
+   *
+   * On `videoToSound` it decides BOTH, because that endpoint has no
+   * `keepOriginalSound`: unset means the source's own speech is left out of
+   * the deliverable entirely, and `true` is what pulls the original track in
+   * and ducks the bed under it. Pass `preserveSpeech` instead to bring in the
+   * isolated vocals rather than the whole track. */
   ducking?: boolean;
   /** How many distinct variants to generate in one request (1-10, default
    * 1). Cost scales linearly, and values above 1 are never covered by the
@@ -453,9 +460,9 @@ export interface VideoToSoundParams extends VideoToVideoSoundParams {
   outputFormat?: "wav" | "m4a" | "mp3";
   /** Not available on this endpoint. `keepOriginalSound` only means something
    * when the deliverable is a video whose own audio could be preserved;
-   * `videoToSound` returns generated audio, and its default already keeps the
-   * source voice in the mix. Typed `never` so passing it is a compile error
-   * rather than a field the server silently drops — the mirror of how
+   * `videoToSound` returns generated audio, and reaches the original track
+   * through `ducking: true` instead. Typed `never` so passing it is a compile
+   * error rather than a field the server silently drops — the mirror of how
    * `outputFormat` is kept off `videoToVideoSound`. */
   keepOriginalSound?: never;
 }
@@ -528,8 +535,8 @@ export interface DubbingParams {
   languages?: DubbingLanguage[];
   /**
    * Duck the background music/effects bed under the dubbed voice. Default
-   * OFF server-side (the opposite of video-to-music's `ducking`): the bed
-   * is always kept, at a constant level unless this is `true`. Free.
+   * OFF server-side, like every other endpoint's `ducking`: the bed is
+   * always kept, at a constant level unless this is `true`. Free.
    */
   ducking?: boolean;
 }
