@@ -15,10 +15,11 @@ type SoundFormParams = VideoToVideoSoundParams & Pick<VideoToSoundParams, "outpu
  * /v1/video-to-video-sound. The two differ only in the path they POST to and
  * in the two endpoint-specific fields described on `SoundFormParams`.
  *
- * Every optional field is omitted when unset rather than sent with a default.
- * `ducking` is default-ON server-side, so an unset value must not become an
- * explicit "false" on the wire; `keepOriginalSound` is the mirror case —
- * default-OFF, so an unset value must not go out as an explicit "true". */
+ * Every optional field is omitted when unset rather than sent with a default,
+ * so the server's own default decides. `ducking` and `keepOriginalSound` are
+ * both default-OFF server-side today, but neither is hardcoded here — pinning
+ * either one on the wire is what would have to change the next time a server
+ * default moves, and this builder deliberately does not. */
 export async function buildSoundForm(params: SoundFormParams): Promise<FormData> {
   if ((params.video === undefined) === (params.videoUrl === undefined)) {
     throw new SoniloError("Provide exactly one of video or videoUrl");

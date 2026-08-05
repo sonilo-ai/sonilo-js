@@ -1108,6 +1108,51 @@ describe("runVideoToVideoMusic", () => {
     ]);
   });
 
+  /* `ducking` is default-OFF server-side, so the flag that matters is the
+   * opt-in one. --no-ducking predates the flip and still parses, sending the
+   * explicit `false` that matches the default, so existing scripts do not
+   * break. Unset must put nothing on the wire in either direction. */
+  it.each([
+    { argv: ["--ducking"], wire: "true" },
+    { argv: ["--no-ducking"], wire: "false" },
+    { argv: [], wire: null },
+  ])("sends ducking=$wire for $argv", async ({ argv, wire }) => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvmd", status: "processing" })
+        : json({
+            task_id: "vvmd",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/scored.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      ...argv,
+    ]);
+
+    expect((calls[0]!.init.body as FormData).get("ducking")).toBe(wire);
+  });
+
+  it("rejects --ducking together with --no-ducking", async () => {
+    const { client } = mockClient(() => json({ task_id: "vvmd2", status: "processing" }));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      runVideoToVideoMusic(client, [
+        "--video-url",
+        "https://in.example.com/clip.mp4",
+        "--ducking",
+        "--no-ducking",
+      ]),
+    ).rejects.toThrow("process.exit");
+  });
+
   it("honors --output over the URL-derived default", async () => {
     const { client } = mockClient((url) =>
       url.endsWith("/v1/video-to-video-music")
