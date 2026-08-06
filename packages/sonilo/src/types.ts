@@ -144,6 +144,14 @@ export interface VideoToMusicParams {
    * by `submit()`) — only meaningful via `submit()`; `stream()`/`generate()`
    * never send it, since they always request a plain stream. */
   variantsNum?: number;
+  /** How strongly the generated music follows the prompt (0-1, API default
+   * 0.5). Lower values let the video lead; higher values follow the prompt
+   * more literally. Free of charge. A generation-time knob, not a
+   * finalize-time one, so it works on the plain stream as well as async —
+   * no `mode` gating. Omitted from the wire when unset so the server
+   * default applies; `0` is a meaningful value and is sent. Out-of-range
+   * values are rejected server-side with a 422. */
+  promptInfluence?: number;
 }
 
 /** One service's free-trial allowance. `remaining` is already floored at 0,
@@ -390,6 +398,12 @@ export interface VideoToVideoMusicParams {
    * by the free trial. This endpoint is always async, so no extra `mode`
    * gating applies. The result's `videos[]` gets one entry per variant. */
   variantsNum?: number;
+  /** How strongly the generated music follows the prompt (0-1, API default
+   * 0.5). Lower values let the video lead; higher values follow the prompt
+   * more literally. Free of charge. Omitted from the wire when unset so the
+   * server default applies; `0` is a meaningful value and is sent.
+   * Out-of-range values are rejected server-side with a 422. */
+  promptInfluence?: number;
 }
 
 export interface VideoToVideoSfxParams {

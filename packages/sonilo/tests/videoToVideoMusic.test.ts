@@ -73,6 +73,44 @@ describe("videoToVideoMusic", () => {
     expect(form.has("variants_num")).toBe(false);
   });
 
+  it("posts prompt_influence when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({
+      videoUrl: "https://x/v.mp4",
+      promptInfluence: 0.8,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("prompt_influence")).toBe("0.8");
+  });
+
+  it("sends prompt_influence: 0 rather than dropping it as falsy", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({
+      videoUrl: "https://x/v.mp4",
+      promptInfluence: 0,
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    // 0 means "the video leads entirely" — a meaningful request, not an unset
+    // one. A truthiness check would silently fall back to the server's 0.5.
+    expect(form.get("prompt_influence")).toBe("0");
+  });
+
+  it("omits prompt_influence when unset so the server default (0.5) applies", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ task_id: "t", status: "processing" }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.videoToVideoMusic.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("prompt_influence")).toBe(false);
+  });
+
   it("omits keep_original_sound when unset so the server default (off) applies", async () => {
     const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ task_id: "t", status: "processing" }),

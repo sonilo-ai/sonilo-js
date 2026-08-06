@@ -517,6 +517,76 @@ describe("runVideoToMusic --segments", () => {
   });
 });
 
+describe("runVideoToMusic --prompt-influence", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** An NDJSON stream Response, for the non-async path. */
+  function ndjson(events: unknown[]): Response {
+    return new Response(events.map((e) => JSON.stringify(e)).join("\n") + "\n", {
+      status: 200,
+      headers: { "content-type": "application/x-ndjson" },
+    });
+  }
+
+  it("posts prompt_influence 0 on the plain stream — it never forces --async and 0 is not dropped", async () => {
+    const { client, calls } = mockClient(() =>
+      ndjson([{ type: "audio_chunk", data: btoa("x") }, { type: "complete" }]),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--prompt-influence",
+      "0",
+    ]);
+
+    // Exactly one request, and it is the stream (no mode field): the flag did
+    // not force the async path.
+    expect(calls.length).toBe(1);
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("mode")).toBe(false);
+    expect(form.get("prompt_influence")).toBe("0");
+  });
+
+  it("posts prompt_influence on the async submit and omits it when the flag is absent", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-music")
+        ? json({ task_id: "vm3", status: "processing" })
+        : json({
+            task_id: "vm3",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--async",
+      "--prompt-influence",
+      "0.8",
+    ]);
+    expect((calls[0]!.init.body as FormData).get("prompt_influence")).toBe("0.8");
+
+    calls.length = 0;
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--async",
+    ]);
+    expect((calls[0]!.init.body as FormData).has("prompt_influence")).toBe(false);
+  });
+});
+
 describe("runVideoToSfx --segments", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1106,6 +1176,37 @@ describe("runVideoToVideoMusic", () => {
       "scored.0.mp4",
       "scored.1.mp4",
     ]);
+  });
+
+  it("posts prompt_influence when passed (including 0) and omits it when absent", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-video-music")
+        ? json({ task_id: "vvm5", status: "processing" })
+        : json({
+            task_id: "vvm5",
+            status: "succeeded",
+            video: { url: "https://cdn.example.com/scored.mp4" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToVideoMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--prompt-influence",
+      "0",
+    ]);
+    // 0 is a meaningful value (the video leads entirely); a truthiness check
+    // would silently fall back to the server's 0.5 default.
+    expect((calls[0]!.init.body as FormData).get("prompt_influence")).toBe("0");
+
+    calls.length = 0;
+    await runVideoToVideoMusic(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+    expect((calls[0]!.init.body as FormData).has("prompt_influence")).toBe(false);
   });
 
   /* `ducking` is default-OFF server-side, so the flag that matters is the
