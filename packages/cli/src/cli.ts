@@ -79,6 +79,11 @@ video-to-music options:
                                 the free trial. Above 1, one file is written
                                 per variant, indexed before the extension
                                 (see --variants under text-to-music above).
+  --prompt-influence <0-1>      How strongly the music follows the prompt
+                                (default 0.5). Lower values let the video
+                                lead; higher values follow the prompt more
+                                literally. Free of charge. Works with or
+                                without --async.
 
 text-to-sfx options:
   --prompt <text>        Required. What the sound effect should be.
@@ -159,6 +164,10 @@ video-to-video-music options (async-only, writes a video):
                           written per variant, indexed before the extension:
                           --output out.mp4 --variants 2 writes out.0.mp4,
                           out.1.mp4.
+  --prompt-influence <0-1>  How strongly the music follows the prompt
+                          (default 0.5). Lower values let the video lead;
+                          higher values follow the prompt more literally.
+                          Free of charge.
 
 video-to-video-sfx options (async-only, writes a video):
   --video <path>         Required (or --video-url). Local file to score.
@@ -635,6 +644,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
       async: { type: "boolean" },
       segments: { type: "string" },
       variants: { type: "string" },
+      "prompt-influence": { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -652,6 +662,11 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   const isolateVocals = values["isolate-vocals"] === true;
   const preserveSpeech = values["preserve-speech"] === true;
   const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
+  // Explicit undefined check, not truthiness: --prompt-influence 0 is a
+  // meaningful value (video leads entirely) and must still be sent. Works on
+  // both the stream and async paths — it never forces --async.
+  const promptInfluence =
+    values["prompt-influence"] !== undefined ? Number(values["prompt-influence"]) : undefined;
   // variantsNum > 1 requires the async task API, same as the other async-only options.
   const useAsync =
     values.async === true ||
@@ -669,6 +684,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
       videoUrl: values["video-url"],
       prompt: values.prompt,
       segments,
+      promptInfluence,
     });
     await writeAudio(track.audio, outputPath(values.output, format));
     return;
@@ -683,6 +699,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
     preserveSpeech,
     segments,
     variantsNum,
+    promptInfluence,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
   const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
@@ -980,6 +997,7 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
       "no-ducking": { type: "boolean" },
       output: { type: "string" },
       variants: { type: "string" },
+      "prompt-influence": { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -998,6 +1016,10 @@ export async function runVideoToVideoMusic(client: SoniloClient, argv: string[])
     isolateVocals: values["isolate-vocals"] === true ? true : undefined,
     ducking: resolveDucking(values.ducking, values["no-ducking"]),
     variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
+    // Explicit undefined check, not truthiness: --prompt-influence 0 is a
+    // meaningful value (video leads entirely) and must still be sent.
+    promptInfluence:
+      values["prompt-influence"] !== undefined ? Number(values["prompt-influence"]) : undefined,
   });
   await waitAndWriteVideo(client, task, values.output);
 }

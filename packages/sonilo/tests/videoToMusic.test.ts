@@ -218,6 +218,36 @@ describe("videoToMusic.submit", () => {
     const form = calls[0]!.init.body as FormData;
     expect(form.get("variants_num")).toBe("1");
   });
+
+  it("posts prompt_influence when set", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      promptInfluence: 0.8,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("prompt_influence")).toBe("0.8");
+  });
+
+  it("sends prompt_influence: 0 rather than dropping it as falsy", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      promptInfluence: 0,
+    });
+    const form = calls[0]!.init.body as FormData;
+    // 0 means "the video leads entirely" — a meaningful request, not an unset
+    // one. A truthiness check would silently fall back to the server's 0.5.
+    expect(form.get("prompt_influence")).toBe("0");
+  });
+
+  it("omits prompt_influence when unset so the server default (0.5) applies", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({ videoUrl: "https://example.com/v.mp4" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("prompt_influence")).toBe(false);
+  });
+
 });
 
 describe("videoToMusic.stream ignores variantsNum", () => {
@@ -229,5 +259,26 @@ describe("videoToMusic.stream ignores variantsNum", () => {
     });
     const form = calls[0]!.init.body as FormData;
     expect(form.has("variants_num")).toBe(false);
+  });
+});
+
+describe("videoToMusic.stream prompt_influence", () => {
+  // Unlike variantsNum above, promptInfluence is a generation-time knob the
+  // backend accepts on both modes, so the plain stream sends it too.
+  it("sends prompt_influence on the plain stream, including 0", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.videoToMusic.generate({
+      videoUrl: "https://example.com/v.mp4",
+      promptInfluence: 0,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("prompt_influence")).toBe("0");
+  });
+
+  it("omits prompt_influence from the stream when unset", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.videoToMusic.generate({ videoUrl: "https://example.com/v.mp4" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("prompt_influence")).toBe(false);
   });
 });

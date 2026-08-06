@@ -22,6 +22,12 @@ export class VideoToMusic {
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
+    // A generation-time knob, valid on the plain stream as well as async —
+    // unlike the finalize-time params, which submit() alone sends. The
+    // explicit undefined check matters: 0 is a meaningful value.
+    if (params.promptInfluence !== undefined) {
+      form.set("prompt_influence", String(params.promptInfluence));
+    }
     // Opt out of the client's absolute request timeout: this holds the
     // response body open and reads NDJSON chunks for as long as generation
     // takes, so an AbortSignal keyed to elapsed time would kill a healthy,
@@ -97,6 +103,10 @@ export class VideoToMusic {
     }
     if (params.variantsNum !== undefined) {
       form.set("variants_num", String(params.variantsNum));
+    }
+    // Explicit undefined check: 0 is a meaningful value and must go out.
+    if (params.promptInfluence !== undefined) {
+      form.set("prompt_influence", String(params.promptInfluence));
     }
     const res = await this.client.request("/v1/video-to-music", {
       method: "POST",

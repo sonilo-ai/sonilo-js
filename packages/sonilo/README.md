@@ -55,6 +55,24 @@ const track = await sonilo.videoToMusic.generate({
 await sonilo.videoToMusic.generate({ videoUrl: "https://example.com/clip.mp4" });
 ```
 
+### Prompt influence
+
+`promptInfluence` controls how strongly the generated music follows the prompt
+(0-1, API default 0.5). Lower values let the video lead; higher values follow
+the prompt more literally. It is free of charge, and available on
+`videoToMusic` (both the stream and the async `submit()` path — it never
+forces async) and `videoToVideoMusic`. Leave it unset to keep the server's
+0.5 default; `0` is a meaningful value ("the video leads entirely") and is
+sent when set. Out-of-range values are rejected with a 422.
+
+```ts
+await sonilo.videoToMusic.generate({
+  video: "./my_video.mp4",
+  prompt: "upbeat, energetic",
+  promptInfluence: 0.8, // follow the prompt more literally
+});
+```
+
 ### Preserve speech (async)
 
 Set `preserveSpeech: true` to keep the source speech/vocals in the result.

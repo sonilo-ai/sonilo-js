@@ -41,6 +41,10 @@ export class VideoToVideoMusic {
     if (params.variantsNum !== undefined) {
       form.set("variants_num", String(params.variantsNum));
     }
+    // Explicit undefined check: 0 is a meaningful value and must go out.
+    if (params.promptInfluence !== undefined) {
+      form.set("prompt_influence", String(params.promptInfluence));
+    }
     const res = await this.client.request("/v1/video-to-video-music", {
       method: "POST",
       body: form,
