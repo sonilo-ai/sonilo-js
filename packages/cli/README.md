@@ -15,6 +15,22 @@ Or run it without installing:
 npx sonilo-cli account
 ```
 
+## Signing in
+
+```bash
+sonilo login    # opens your browser to approve this device
+sonilo whoami   # show which account and key are currently active
+sonilo logout   # revoke the stored key and forget it locally
+```
+
+`sonilo login` stores a credential in `~/.config/sonilo/credentials.json`
+(override the directory with `XDG_CONFIG_HOME`), and every command picks it up
+automatically — no key to paste or export.
+
+Credentials are resolved in this order: `--api-key`, then `SONILO_API_KEY`,
+then the stored credential from `sonilo login`. CI and other non-interactive
+environments should keep using `SONILO_API_KEY`.
+
 ## Authentication
 
 ```bash

@@ -233,9 +233,11 @@ Global options:
   --version          Print the CLI version and exit.
 
 Environment:
-  SONILO_API_KEY     Your API key (starts with sk-). Required unless --api-key
-                     is passed.
-  Credentials from "sonilo login" are stored in ~/.config/sonilo/credentials.json (override the directory with XDG_CONFIG_HOME).
+  SONILO_API_KEY     Your API key (starts with sk-). Used when --api-key is
+                     not passed.
+  Credential resolution order: --api-key, then SONILO_API_KEY, then a stored
+  credential from "sonilo login" (~/.config/sonilo/credentials.json, override
+  the directory with XDG_CONFIG_HOME).
 
 Examples:
   sonilo login
