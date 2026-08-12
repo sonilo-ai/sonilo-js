@@ -69,6 +69,27 @@ describe("startDevice", () => {
       startDevice(BASE, d, { hostname: "h", os: "darwin", version: "0.12.0" }),
     ).rejects.toThrow(/too many sign-in attempts/i);
   });
+
+  it("passes a request timeout on the device-start call", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const d: LoginDeps = {
+      fetch: (async (_url: string, init?: RequestInit) => {
+        capturedSignal = init?.signal ?? undefined;
+        return new Response(JSON.stringify(START), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+      now: () => 0,
+      openBrowser: async () => {},
+      log: () => {},
+    };
+
+    await startDevice(BASE, d, { hostname: "h", os: "darwin", version: "0.12.0" });
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe("pollForToken", () => {
@@ -260,6 +281,63 @@ describe("runLogin", () => {
     expect(readCredential(STAGING, path)?.api_key).toBe("sk-staging");
     expect(readCredential(BASE, path)?.api_key).toBe("sk-prod");
   });
+
+  // buildClient's "your sonilo login expired — run sonilo login again"
+  // message must actually be actionable: without this, the "already signed
+  // in" guard below would refuse to do anything (it only checked existence,
+  // not expiry), and the user's only way out would be --force.
+  it("treats an expired stored credential as not-signed-in and logs in fresh without --force", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ expires_at: "2020-01-01T00:00:00Z" }), path);
+    const { d, calls, logs } = runDeps();
+
+    await runLogin([], d, path);
+
+    expect(calls.some((call) => call.url === `${BASE}/cli/auth/device/start`)).toBe(true);
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-new");
+    expect(logs.some((line) => line.includes("Already signed in"))).toBe(false);
+    // The superseded (expired) key is still revoked, best-effort.
+    const revoke = calls.find((call) => call.url === `${BASE}/v1/account/keys/self`);
+    expect(revoke?.headers["authorization"]).toBe("Bearer sk-old");
+  });
+
+  it("normalizes a trailing slash on --api-base so it shares the store key with the bare base", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ api_key: "sk-prod" }), path);
+    const { d } = runDeps({ ...TOKEN, api_key: "sk-new-trailing" });
+
+    await runLogin(["--api-base", `${BASE}/`, "--force"], d, path);
+
+    // Written under the normalized (no trailing slash) key, so reading it
+    // back under the bare BASE finds the new credential, not a second entry.
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-new-trailing");
+  });
+
+  it("passes a request timeout on the revoke call, and treats a timeout the same as any other revoke failure", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, logs } = runDeps();
+    let revokeSignal: AbortSignal | undefined;
+    const timingOut: LoginDeps = {
+      ...d,
+      fetch: (async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/v1/account/keys/self")) {
+          revokeSignal = init?.signal ?? undefined;
+          throw new DOMException("The operation was aborted.", "TimeoutError");
+        }
+        return d.fetch(url as unknown as URL, init);
+      }) as unknown as typeof fetch,
+    };
+
+    await runLogin(["--force"], timingOut, path);
+
+    expect(revokeSignal).toBeInstanceOf(AbortSignal);
+    expect(logs.some((line) => line.includes("Note: could not revoke the previous key"))).toBe(
+      true,
+    );
+    // A revoke timeout is not a login failure — the new credential is kept.
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-new");
+  });
 });
 
 /** Records every fetch call made by `runLogout` and routes every one of them
@@ -340,6 +418,41 @@ describe("runLogout", () => {
     expect(logs).toEqual(["Not signed in."]);
     expect(calls).toEqual([]);
   });
+
+  it("normalizes a trailing slash on --api-base so it reads the same stored credential as the bare base", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, calls } = logoutDeps(200);
+
+    await runLogout(["--api-base", `${BASE}/`], d, path);
+
+    expect(calls[0]?.url).toBe(`${BASE}/v1/account/keys/self`);
+    expect(readCredential(BASE, path)).toBeNull();
+  });
+
+  it("passes a request timeout on the revoke call, and treats a timeout like the existing revoke-failure path", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    let revokeSignal: AbortSignal | undefined;
+    const timingOut: LoginDeps = {
+      fetch: (async (_url: string, init?: RequestInit) => {
+        revokeSignal = init?.signal ?? undefined;
+        throw new DOMException("The operation was aborted.", "TimeoutError");
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+      now: () => 0,
+      openBrowser: async () => {},
+      log: () => {},
+    };
+    const logs: string[] = [];
+    timingOut.log = (line) => void logs.push(line);
+
+    await runLogout([], timingOut, path);
+
+    expect(revokeSignal).toBeInstanceOf(AbortSignal);
+    expect(logs.some((line) => line.includes("may still be active"))).toBe(true);
+    expect(readCredential(BASE, path)).toEqual(sample());
+  });
 });
 
 describe("runWhoami", () => {
@@ -396,5 +509,39 @@ describe("runWhoami", () => {
     const dateLine = logs.find((line) => line.includes("2020-01-01"));
     expect(dateLine).toBeDefined();
     expect(dateLine).toContain("expired");
+  });
+
+  // Truthiness, matching buildClient's `apiKeyFlag ?? process.env.SONILO_API_KEY`
+  // then `if (!apiKey)`: an exported-but-empty SONILO_API_KEY must not claim
+  // to be the active source, since buildClient would fall through it.
+  it("does not treat an empty SONILO_API_KEY as the active source", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ api_key: "sk-abcdefghijklmnop" }), path);
+    const logs: string[] = [];
+
+    runWhoami(
+      [],
+      { SONILO_API_KEY: "" } as unknown as NodeJS.ProcessEnv,
+      (line) => logs.push(line),
+      path,
+    );
+
+    const out = logs.join("\n");
+    expect(out).not.toContain("SONILO_API_KEY");
+    expect(out).toContain("source: credential file");
+  });
+
+  it("with SONILO_API_KEY set and no credential file entry, reports the source without the ignored-credential suffix", () => {
+    const path = tmpFile();
+    const logs: string[] = [];
+
+    runWhoami(
+      [],
+      { SONILO_API_KEY: "sk-env-key" } as unknown as NodeJS.ProcessEnv,
+      (line) => logs.push(line),
+      path,
+    );
+
+    expect(logs).toEqual(["source: SONILO_API_KEY"]);
   });
 });

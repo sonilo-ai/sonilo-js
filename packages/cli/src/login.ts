@@ -74,6 +74,7 @@ export async function startDevice(
       hostname: meta.hostname,
       os: meta.os,
     }),
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (response.status === 429) {
@@ -207,10 +208,19 @@ export async function runLogin(
     },
   });
 
-  const apiBase = values["api-base"] ?? process.env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const apiBase = (
+    values["api-base"] ??
+    process.env["SONILO_API_URL"] ??
+    "https://api.sonilo.com"
+  ).replace(/\/+$/, "");
   const previous = readCredential(apiBase, filePath);
+  // An expired stored credential is treated as not-signed-in: buildClient's
+  // "your sonilo login expired — run sonilo login again" message would
+  // otherwise dead-end here, since re-running it without --force would just
+  // print "Already signed in" and refuse to do anything.
+  const previousExpired = previous !== null && Date.parse(previous.expires_at) <= Date.now();
 
-  if (previous && values.force !== true) {
+  if (previous && !previousExpired && values.force !== true) {
     // The backend names the minted key "cli: {hostname}" using the same
     // os.hostname() this file sends from startDevice() below — not the API
     // host — so a user can find it in the dashboard by matching this line
@@ -254,6 +264,7 @@ export async function runLogin(
       const response = await deps.fetch(`${apiBase}/v1/account/keys/self`, {
         method: "DELETE",
         headers: { authorization: `Bearer ${previous.api_key}` },
+        signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
         deps.log(`Note: could not revoke the previous key (HTTP ${response.status}).`);
@@ -286,12 +297,24 @@ export function runWhoami(
     args: argv,
     options: { "api-base": { type: "string" } },
   });
-  const apiBase = values["api-base"] ?? env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const apiBase = (
+    values["api-base"] ??
+    env["SONILO_API_URL"] ??
+    "https://api.sonilo.com"
+  ).replace(/\/+$/, "");
   const envKey = env["SONILO_API_KEY"];
   const credential = readCredential(apiBase, filePath);
 
-  if (envKey !== undefined) {
-    log("source: SONILO_API_KEY (the stored credential is being ignored)");
+  // Truthiness, matching buildClient's `apiKeyFlag ?? process.env.SONILO_API_KEY`
+  // then `if (!apiKey)`: SONILO_API_KEY="" must not report itself as the
+  // active source when buildClient would fall through it to the stored
+  // credential (or fail).
+  if (envKey) {
+    log(
+      credential
+        ? "source: SONILO_API_KEY (the stored credential is being ignored)"
+        : "source: SONILO_API_KEY",
+    );
     return;
   }
 
@@ -336,7 +359,11 @@ export async function runLogout(
     },
   });
 
-  const apiBase = values["api-base"] ?? process.env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const apiBase = (
+    values["api-base"] ??
+    process.env["SONILO_API_URL"] ??
+    "https://api.sonilo.com"
+  ).replace(/\/+$/, "");
   const credential = readCredential(apiBase, filePath);
 
   if (!credential) {
@@ -350,6 +377,7 @@ export async function runLogout(
       const response = await deps.fetch(`${apiBase}/v1/account/keys/self`, {
         method: "DELETE",
         headers: { authorization: `Bearer ${credential.api_key}` },
+        signal: AbortSignal.timeout(10_000),
       });
       ok = response.ok;
     } catch {

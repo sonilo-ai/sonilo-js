@@ -64,8 +64,20 @@ function save(filePath: string, file: CredentialFile): void {
   // Write beside the target and rename: an interrupted write can never leave a
   // half-written credential where a whole one used to be.
   const tmp = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, filePath);
+  // "wx" refuses to follow or overwrite a pre-planted path at `tmp` — the
+  // write throws instead of silently writing into whatever an attacker (or a
+  // stale leftover) put there.
+  writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  try {
+    renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best effort — the rename failure is the one that matters */
+    }
+    throw err;
+  }
   chmodSync(filePath, 0o600);
 }
 

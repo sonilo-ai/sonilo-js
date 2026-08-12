@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -90,6 +90,28 @@ describe("credential store", () => {
     const path = tmpFile();
     writeFileSync(path, "{ not json");
     expect(readCredential(BASE, path)).toBeNull();
+  });
+
+  it("refuses to overwrite a pre-planted file at the tmp write path", () => {
+    const path = tmpFile();
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, "planted");
+
+    expect(() => writeCredential(BASE, sample(), path)).toThrow();
+    // "wx" means the planted file was refused outright, not followed or
+    // silently overwritten.
+    expect(readFileSync(tmp, "utf8")).toBe("planted");
+  });
+
+  it("cleans up the tmp file, best-effort, when the rename step fails", () => {
+    const path = tmpFile();
+    // A directory sitting where the target file must go makes rename(2)
+    // fail (EISDIR), without needing to mock node:fs.
+    mkdirSync(path);
+    const tmp = `${path}.${process.pid}.tmp`;
+
+    expect(() => writeCredential(BASE, sample(), path)).toThrow();
+    expect(existsSync(tmp)).toBe(false);
   });
 
   it("leaves unknown fields alone when rewriting", () => {

@@ -19,6 +19,7 @@ import {
   parseFormat,
   readSegments,
   runAccount,
+  runAuthCommand,
   runDubbing,
   runTasksGet,
   runTasksWait,
@@ -1750,6 +1751,7 @@ describe("runTasksWait", () => {
 
 describe("buildClient", () => {
   const ORIGINAL_ENV_KEY = process.env.SONILO_API_KEY;
+  const ORIGINAL_ENV_URL = process.env.SONILO_API_URL;
   let tmpDir: string;
 
   function credFile(): string {
@@ -1778,6 +1780,11 @@ describe("buildClient", () => {
       delete process.env.SONILO_API_KEY;
     } else {
       process.env.SONILO_API_KEY = ORIGINAL_ENV_KEY;
+    }
+    if (ORIGINAL_ENV_URL === undefined) {
+      delete process.env.SONILO_API_URL;
+    } else {
+      process.env.SONILO_API_URL = ORIGINAL_ENV_URL;
     }
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     vi.restoreAllMocks();
@@ -1864,5 +1871,67 @@ describe("buildClient", () => {
       'sonilo: your sonilo login expired — run "sonilo login" again',
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("sends requests to SONILO_API_URL, not the SDK's hardcoded prod default", async () => {
+    const path = credFile();
+    const staging = "https://api.staging.sonilo.com";
+    process.env.SONILO_API_URL = staging;
+    writeCredential(staging, sample({ api_key: "sk-staging" }), path);
+    delete process.env.SONILO_API_KEY;
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    const client = buildClient(undefined, path);
+    await client.account.services();
+
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe(`${staging}/v1/account/services`);
+  });
+});
+
+describe("runAuthCommand", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a denied login surfaces via the fail path, no re-throw", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runAuthCommand(() => {
+        throw new Error("sign-in was denied in the browser — nothing was granted");
+      }),
+    ).rejects.toThrow("process.exit");
+
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: sign-in was denied in the browser — nothing was granted",
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("lets a rejected async command through the same fail path", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runAuthCommand(async () => {
+        throw new Error("too many sign-in attempts right now — wait a minute and run sonilo login again");
+      }),
+    ).rejects.toThrow("process.exit");
+
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: too many sign-in attempts right now — wait a minute and run sonilo login again",
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("does not intercept success", async () => {
+    await expect(runAuthCommand(() => {})).resolves.toBeUndefined();
   });
 });

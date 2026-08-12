@@ -64,6 +64,10 @@ logout options:
   --api-base <url>      Sign out of a non-default API deployment.
                         Default: SONILO_API_URL, or https://api.sonilo.com
 
+whoami options:
+  --api-base <url>      Report on a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
+
 text-to-music options:
   --prompt <text>       Required. What the music should sound like.
   --duration <seconds>  Required. Track length.
@@ -532,7 +536,9 @@ export function buildClient(
   apiKeyFlag: string | undefined,
   filePath?: string,
 ): SoniloClient {
-  const apiBase = process.env.SONILO_API_URL ?? "https://api.sonilo.com";
+  // Trailing slashes normalized so "https://x.com/" and "https://x.com" share
+  // one credential-store key and never produce a doubled "//" in a request URL.
+  const apiBase = (process.env.SONILO_API_URL ?? "https://api.sonilo.com").replace(/\/+$/, "");
   // Order matters and is a compatibility promise: an exported SONILO_API_KEY
   // must keep winning over a stored credential, or upgrading the CLI would
   // silently move someone onto a different account.
@@ -552,8 +558,10 @@ export function buildClient(
     );
   }
   // Identify as the CLI, not the SDK it wraps, so CLI traffic stays
-  // separable from direct SDK use in server-side analytics.
-  return new SoniloClient({ apiKey, clientName: "cli-js", clientVersion: VERSION });
+  // separable from direct SDK use in server-side analytics. baseUrl must
+  // match apiBase above — otherwise a staging credential (selected by
+  // SONILO_API_URL) would still be sent to the SDK's hardcoded prod default.
+  return new SoniloClient({ apiKey, baseUrl: apiBase, clientName: "cli-js", clientVersion: VERSION });
 }
 
 function printJson(value: unknown): void {
@@ -1176,6 +1184,23 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   }
 }
 
+/** Runs `login`/`logout`/`whoami` and turns an expected failure — a plain
+ *  `Error` thrown for a rejected sign-in, a 429, an expired code, the
+ *  network being down — into the ordinary `sonilo: <message>` / exit 1 path,
+ *  instead of falling through to main().catch()'s bare `throw err` (which
+ *  only pretty-prints APIError/SoniloError) and printing a raw stack trace
+ *  for something the user did on purpose, like declining in the browser. */
+export async function runAuthCommand(fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof Error) {
+      fail(err.message);
+    }
+    throw err;
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version")) {
@@ -1219,13 +1244,15 @@ async function main(): Promise<void> {
   // one on disk expired), exactly the situation logout produces on purpose,
   // and exactly the situation whoami exists to report on.
   if (command === "login") {
-    return runLogin(commandArgs, defaultLoginDeps());
+    return runAuthCommand(() => runLogin(commandArgs, defaultLoginDeps()));
   }
   if (command === "logout") {
-    return runLogout(commandArgs, defaultLoginDeps());
+    return runAuthCommand(() => runLogout(commandArgs, defaultLoginDeps()));
   }
   if (command === "whoami") {
-    return runWhoami(commandArgs, process.env, (line) => console.log(line));
+    return runAuthCommand(() =>
+      runWhoami(commandArgs, process.env, (line) => console.log(line)),
+    );
   }
 
   const client = buildClient(apiKeyFlag);
