@@ -15,13 +15,122 @@ Or run it without installing:
 npx sonilo-cli account
 ```
 
-## Authentication
+## Signing in
+
+Run this once per machine and you're done — there is no key to create, paste,
+or export:
+
+```bash
+sonilo login
+```
+
+It prints a one-time code and a URL, then opens that URL in your browser:
+
+```
+First copy your one-time code: BXQK-7T2M
+Then open this URL to confirm: https://platform.sonilo.com/dashboard/cli-auth?code=BXQK-7T2M
+```
+
+Sign in with your Sonilo account, confirm the code matches what the terminal
+printed, and approve. The CLI is waiting on that page and continues by itself:
+
+```
+Signed in as Acme Studio. Key expires 2026-11-10.
+```
+
+Every command now works with no further setup:
+
+```bash
+sonilo account
+sonilo text-to-music --prompt "warm lo-fi piano" --duration 30
+```
+
+### What sign-in actually creates
+
+Approving mints an ordinary Sonilo API key on your account — one that expires
+after **90 days** and is named `cli: <your hostname>`, so you can find it in
+[the dashboard](https://platform.sonilo.com/dashboard/api-keys) and revoke it
+there at any time. The CLI stores it in
+`~/.config/sonilo/credentials.json` (`$XDG_CONFIG_HOME/sonilo/` when that
+variable is set), owner-readable only, one entry per API host.
+
+### Checking and ending a session
+
+```bash
+sonilo whoami
+```
+
+```
+account: Acme Studio
+key: sk-1f4c9...
+expires: 2026-11-10
+source: credential file
+```
+
+`whoami` prints only the first few characters of the key, never the whole
+thing, and its `source:` line is the fastest way to explain a surprise: if you
+have `SONILO_API_KEY` exported it says
+`source: SONILO_API_KEY (the stored credential is being ignored)`, because the
+environment variable deliberately wins over a stored sign-in.
+
+```bash
+sonilo logout
+```
+
+This revokes the key on the server first, then forgets it locally — so a
+laptop that loses the file never leaves a live key behind. If the revoke call
+can't reach the API the credential is kept on purpose and the CLI tells you to
+revoke it from the dashboard instead, rather than silently orphaning a working
+key.
+
+### Signing in again
+
+Running `sonilo login` while already signed in reports the existing session
+and stops. Use `--force` to replace it — that mints a fresh key and revokes
+the one it replaces. When a stored credential has expired you don't need the
+flag: `sonilo login` treats an expired sign-in as no sign-in and just renews
+it.
+
+### Machines without a browser
+
+On a server, a container, or over SSH, add `--no-browser`: the CLI prints the
+code and URL without trying to launch anything, so you can approve from your
+laptop while the remote terminal keeps polling.
+
+```bash
+sonilo login --no-browser
+```
+
+## Authentication with an API key
+
+Sign-in is optional. An API key from
+[the dashboard](https://platform.sonilo.com/dashboard/api-keys) works exactly
+as it always has, which is what you want for CI, containers, and any
+non-interactive environment — there's no browser there to approve anything,
+and a 90-day expiry is not something a pipeline should depend on:
 
 ```bash
 export SONILO_API_KEY=sk-...
 ```
 
-Or pass `--api-key sk-...` on any command.
+Or pass `--api-key sk-...` on any single command.
+
+Credentials are resolved in a fixed order, most explicit first:
+
+| Priority | Source |
+|---|---|
+| 1 | `--api-key sk-...` on the command |
+| 2 | `SONILO_API_KEY` in the environment |
+| 3 | the credential stored by `sonilo login` |
+
+The order matters if you already use this CLI: an exported `SONILO_API_KEY`
+keeps winning after you upgrade, so adding a `sonilo login` on the same
+machine cannot quietly move your calls to a different account.
+
+To point everything at another environment, set `SONILO_API_URL` (or pass
+`--api-base` to `login`). Credentials are stored per host, so a staging
+sign-in and a production sign-in coexist without overwriting each other, and
+requests always go to the host their key came from.
 
 ## Usage
 

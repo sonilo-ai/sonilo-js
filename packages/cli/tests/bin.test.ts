@@ -68,4 +68,14 @@ describe("bin entrypoint", () => {
     expect(videoMusic).toContain("Legacy alias for --preserve-speech");
     expect(videoMusic).not.toContain("stem");
   });
+
+  // whoami implements --api-base (it must resolve the same base login/logout
+  // do, to report on a non-default deployment) but the help text never
+  // documented it.
+  it("documents whoami's --api-base flag", () => {
+    const out = execFileSync("node", [BIN, "--help"], { encoding: "utf8" });
+
+    const whoami = optionBlock(out, "whoami");
+    expect(whoami).toContain("--api-base <url>");
+  });
 });

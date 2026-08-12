@@ -23,6 +23,8 @@ import {
   type WaitOptions,
 } from "sonilo";
 import { VERSION } from "./version.js";
+import { readCredential } from "./credentials.js";
+import { defaultLoginDeps, runLogin, runLogout, runWhoami } from "./login.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
 
@@ -30,6 +32,9 @@ Usage:
   sonilo <command> [options]
 
 Commands:
+  login                         Sign in and store an API key for future commands
+  logout                        Revoke the stored key and forget it locally
+  whoami                        Show which account and key are currently active
   account                       Show plan limits and available services
   usage [--days <n>]            Show usage summary (default: last 30 days)
   text-to-music                 Generate music from a text prompt
@@ -44,6 +49,24 @@ Commands:
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
                                 (--poll-interval <ms>, --timeout <ms>)
+
+login options:
+  --force               Re-authenticate even if a credential is already
+                        stored for this API base.
+  --no-browser          Print the sign-in URL instead of opening it in a
+                        browser.
+  --api-base <url>      Sign in against a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
+
+logout options:
+  --local-only          Remove the local credential only; do not revoke the
+                        key server-side.
+  --api-base <url>      Sign out of a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
+
+whoami options:
+  --api-base <url>      Report on a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
 
 text-to-music options:
   --prompt <text>       Required. What the music should sound like.
@@ -214,10 +237,14 @@ Global options:
   --version          Print the CLI version and exit.
 
 Environment:
-  SONILO_API_KEY     Your API key (starts with sk-). Required unless --api-key
-                     is passed.
+  SONILO_API_KEY     Your API key (starts with sk-). Used when --api-key is
+                     not passed.
+  Credential resolution order: --api-key, then SONILO_API_KEY, then a stored
+  credential from "sonilo login" (~/.config/sonilo/credentials.json, override
+  the directory with XDG_CONFIG_HOME).
 
 Examples:
+  sonilo login
   sonilo account
   sonilo text-to-music --prompt "warm lo-fi piano, rain in the background" --duration 30
   sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
@@ -505,16 +532,36 @@ async function writeAudio(bytes: Uint8Array, path: string): Promise<void> {
   console.log(`Wrote ${path} (${bytes.byteLength.toLocaleString()} bytes)`);
 }
 
-export function buildClient(apiKeyFlag: string | undefined): SoniloClient {
-  const apiKey = apiKeyFlag ?? process.env.SONILO_API_KEY;
+export function buildClient(
+  apiKeyFlag: string | undefined,
+  filePath?: string,
+): SoniloClient {
+  // Trailing slashes normalized so "https://x.com/" and "https://x.com" share
+  // one credential-store key and never produce a doubled "//" in a request URL.
+  const apiBase = (process.env.SONILO_API_URL ?? "https://api.sonilo.com").replace(/\/+$/, "");
+  // Order matters and is a compatibility promise: an exported SONILO_API_KEY
+  // must keep winning over a stored credential, or upgrading the CLI would
+  // silently move someone onto a different account.
+  let apiKey = apiKeyFlag ?? process.env.SONILO_API_KEY;
+  if (!apiKey) {
+    const stored = readCredential(apiBase, filePath);
+    if (stored) {
+      if (Date.parse(stored.expires_at) <= Date.now()) {
+        fail('your sonilo login expired — run "sonilo login" again');
+      }
+      apiKey = stored.api_key;
+    }
+  }
   if (!apiKey) {
     fail(
-      "no API key — pass --api-key <key> or set the SONILO_API_KEY environment variable",
+      'no API key — run "sonilo login", or pass --api-key <key>, or set the SONILO_API_KEY environment variable',
     );
   }
   // Identify as the CLI, not the SDK it wraps, so CLI traffic stays
-  // separable from direct SDK use in server-side analytics.
-  return new SoniloClient({ apiKey, clientName: "cli-js", clientVersion: VERSION });
+  // separable from direct SDK use in server-side analytics. baseUrl must
+  // match apiBase above — otherwise a staging credential (selected by
+  // SONILO_API_URL) would still be sent to the SDK's hardcoded prod default.
+  return new SoniloClient({ apiKey, baseUrl: apiBase, clientName: "cli-js", clientVersion: VERSION });
 }
 
 function printJson(value: unknown): void {
@@ -1137,6 +1184,23 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   }
 }
 
+/** Runs `login`/`logout`/`whoami` and turns an expected failure — a plain
+ *  `Error` thrown for a rejected sign-in, a 429, an expired code, the
+ *  network being down — into the ordinary `sonilo: <message>` / exit 1 path,
+ *  instead of falling through to main().catch()'s bare `throw err` (which
+ *  only pretty-prints APIError/SoniloError) and printing a raw stack trace
+ *  for something the user did on purpose, like declining in the browser. */
+export async function runAuthCommand(fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof Error) {
+      fail(err.message);
+    }
+    throw err;
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version")) {
@@ -1154,6 +1218,9 @@ async function main(): Promise<void> {
   const { apiKeyFlag, rest } = extractApiKey(argv);
   const [command, ...commandArgs] = rest;
   const KNOWN_COMMANDS = new Set([
+    "login",
+    "logout",
+    "whoami",
     "account",
     "usage",
     "text-to-music",
@@ -1170,6 +1237,24 @@ async function main(): Promise<void> {
   if (!KNOWN_COMMANDS.has(command ?? "")) {
     fail(`unknown command: ${command}. Run "sonilo --help" for usage.`);
   }
+
+  // "login", "logout", and "whoami" must all be dispatched before
+  // buildClient(): buildClient exits when no API key is configured, which is
+  // exactly the situation login exists to fix (there is no key yet, or the
+  // one on disk expired), exactly the situation logout produces on purpose,
+  // and exactly the situation whoami exists to report on.
+  if (command === "login") {
+    return runAuthCommand(() => runLogin(commandArgs, defaultLoginDeps()));
+  }
+  if (command === "logout") {
+    return runAuthCommand(() => runLogout(commandArgs, defaultLoginDeps()));
+  }
+  if (command === "whoami") {
+    return runAuthCommand(() =>
+      runWhoami(commandArgs, process.env, (line) => console.log(line)),
+    );
+  }
+
   const client = buildClient(apiKeyFlag);
 
   switch (command) {
