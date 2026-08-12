@@ -1,5 +1,5 @@
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { readCredential, writeCredential, type StoredCredential } from "../src/credentials.js";
@@ -219,7 +219,7 @@ describe("runLogin", () => {
     await runLogin([], d, path);
 
     expect(logs).toEqual([
-      "Already signed in as Acme (cli: api.sonilo.com, expires 2026-09-01). Re-authenticate with --force.",
+      `Already signed in as Acme (cli: ${hostname()}, expires 2026-09-01). Re-authenticate with --force.`,
     ]);
     expect(calls).toEqual([]);
     expect(readCredential(BASE, path)?.api_key).toBe("sk-old");

@@ -206,9 +206,12 @@ export async function runLogin(
   const previous = readCredential(apiBase, filePath);
 
   if (previous && values.force !== true) {
-    const host = new URL(apiBase).host;
+    // The backend names the minted key "cli: {hostname}" using the same
+    // os.hostname() this file sends from startDevice() below — not the API
+    // host — so a user can find it in the dashboard by matching this line
+    // against the key list.
     deps.log(
-      `Already signed in as ${accountLabel(previous)} (cli: ${host}, expires ${expiryDate(previous.expires_at)}). Re-authenticate with --force.`,
+      `Already signed in as ${accountLabel(previous)} (cli: ${hostname()}, expires ${expiryDate(previous.expires_at)}). Re-authenticate with --force.`,
     );
     return;
   }
