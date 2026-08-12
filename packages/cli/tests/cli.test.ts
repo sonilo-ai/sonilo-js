@@ -4,10 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import type { SoniloClient } from "sonilo";
 import {
   DUBBING_WAIT_TIMEOUT_MS,
   MUSIC_SEGMENTS,
   SFX_SEGMENTS,
+  buildClient,
   extFromUrl,
   extractApiKey,
   formatTrialSummary,
@@ -31,6 +33,7 @@ import {
   stemOutputPath,
   variantOutputPath,
 } from "../src/cli.js";
+import { writeCredential, type StoredCredential } from "../src/credentials.js";
 import { json, mockClient } from "./helpers.js";
 
 /** A one-shot readable stream carrying `content`, for `--segments @-`. */
@@ -1742,5 +1745,124 @@ describe("runTasksWait", () => {
     expect(logSpy).toHaveBeenCalledWith(
       JSON.stringify({ task_id: "abc123", status: "succeeded" }, null, 2),
     );
+  });
+});
+
+describe("buildClient", () => {
+  const ORIGINAL_ENV_KEY = process.env.SONILO_API_KEY;
+  let tmpDir: string;
+
+  function credFile(): string {
+    tmpDir = mkdtempSync(join(tmpdir(), "sonilo-buildclient-"));
+    return join(tmpDir, "credentials.json");
+  }
+
+  function sample(overrides: Partial<StoredCredential> = {}): StoredCredential {
+    return {
+      api_key: "sk-stored",
+      key_id: "key-0",
+      account_id: "acct-0",
+      account_name: "Acme",
+      expires_at: "2099-01-01T00:00:00Z",
+      created_at: "2026-08-01T00:00:00Z",
+      created_by: "sonilo-cli/0.10.0",
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    // buildClient() reads process.env.SONILO_API_KEY directly, so a leaked
+    // stub here would silently change the behavior of unrelated tests that
+    // run later in the same file.
+    if (ORIGINAL_ENV_KEY === undefined) {
+      delete process.env.SONILO_API_KEY;
+    } else {
+      process.env.SONILO_API_KEY = ORIGINAL_ENV_KEY;
+    }
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  // SoniloClient keeps its api key private, and captures a bound reference
+  // to globalThis.fetch at construction time (so spying on fetch *after*
+  // buildClient runs would not be observed by the client). The only
+  // externally observable proof of which key buildClient picked is the
+  // Authorization header on an actual request, so the fetch spy has to be in
+  // place before buildClient() constructs the client.
+  async function authorizationHeader(
+    build: () => SoniloClient,
+  ): Promise<string | null> {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    const client = build();
+    await client.account.services();
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    return new Headers(init.headers).get("Authorization");
+  }
+
+  it("prefers --api-key over both SONILO_API_KEY and a stored credential", async () => {
+    const path = credFile();
+    writeCredential("https://api.sonilo.com", sample(), path);
+    process.env.SONILO_API_KEY = "sk-env";
+
+    await expect(authorizationHeader(() => buildClient("sk-flag", path))).resolves.toBe(
+      "Bearer sk-flag",
+    );
+  });
+
+  it("prefers SONILO_API_KEY over a stored credential (the compatibility guarantee)", async () => {
+    const path = credFile();
+    writeCredential("https://api.sonilo.com", sample(), path);
+    process.env.SONILO_API_KEY = "sk-env";
+
+    await expect(authorizationHeader(() => buildClient(undefined, path))).resolves.toBe(
+      "Bearer sk-env",
+    );
+  });
+
+  it("falls back to the stored credential when neither flag nor env is set", async () => {
+    const path = credFile();
+    writeCredential("https://api.sonilo.com", sample({ api_key: "sk-stored-only" }), path);
+    delete process.env.SONILO_API_KEY;
+
+    await expect(authorizationHeader(() => buildClient(undefined, path))).resolves.toBe(
+      "Bearer sk-stored-only",
+    );
+  });
+
+  it("fails with the three-tier error when no credential is available anywhere", () => {
+    const path = credFile();
+    delete process.env.SONILO_API_KEY;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    expect(() => buildClient(undefined, path)).toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      'sonilo: no API key — run "sonilo login", or pass --api-key <key>, or set the SONILO_API_KEY environment variable',
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("fails without constructing a client when the stored credential has expired", () => {
+    const path = credFile();
+    writeCredential(
+      "https://api.sonilo.com",
+      sample({ expires_at: "2020-01-01T00:00:00Z" }),
+      path,
+    );
+    delete process.env.SONILO_API_KEY;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    expect(() => buildClient(undefined, path)).toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      'sonilo: your sonilo login expired — run "sonilo login" again',
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

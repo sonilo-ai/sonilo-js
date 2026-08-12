@@ -23,6 +23,7 @@ import {
   type WaitOptions,
 } from "sonilo";
 import { VERSION } from "./version.js";
+import { readCredential } from "./credentials.js";
 import { defaultLoginDeps, runLogin, runLogout, runWhoami } from "./login.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
@@ -525,11 +526,27 @@ async function writeAudio(bytes: Uint8Array, path: string): Promise<void> {
   console.log(`Wrote ${path} (${bytes.byteLength.toLocaleString()} bytes)`);
 }
 
-export function buildClient(apiKeyFlag: string | undefined): SoniloClient {
-  const apiKey = apiKeyFlag ?? process.env.SONILO_API_KEY;
+export function buildClient(
+  apiKeyFlag: string | undefined,
+  filePath?: string,
+): SoniloClient {
+  const apiBase = process.env.SONILO_API_URL ?? "https://api.sonilo.com";
+  // Order matters and is a compatibility promise: an exported SONILO_API_KEY
+  // must keep winning over a stored credential, or upgrading the CLI would
+  // silently move someone onto a different account.
+  let apiKey = apiKeyFlag ?? process.env.SONILO_API_KEY;
+  if (!apiKey) {
+    const stored = readCredential(apiBase, filePath);
+    if (stored) {
+      if (Date.parse(stored.expires_at) <= Date.now()) {
+        fail('your sonilo login expired — run "sonilo login" again');
+      }
+      apiKey = stored.api_key;
+    }
+  }
   if (!apiKey) {
     fail(
-      "no API key — pass --api-key <key> or set the SONILO_API_KEY environment variable",
+      'no API key — run "sonilo login", or pass --api-key <key>, or set the SONILO_API_KEY environment variable',
     );
   }
   // Identify as the CLI, not the SDK it wraps, so CLI traffic stays
