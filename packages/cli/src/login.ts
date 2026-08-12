@@ -1,3 +1,9 @@
+import { spawn } from "node:child_process";
+import { hostname } from "node:os";
+import { parseArgs } from "node:util";
+import { readCredential, writeCredential, type StoredCredential } from "./credentials.js";
+import { VERSION } from "./version.js";
+
 /** The response from `POST /cli/auth/device/start`. */
 export interface DeviceStart {
   device_code: string;
@@ -163,4 +169,134 @@ export async function pollForToken(
 
     await deps.sleep(intervalMs);
   }
+}
+
+/** An ISO timestamp's date portion, in UTC, for the human-readable "expires
+ *  <date>" lines. UTC (not the local zone) keeps this deterministic in tests
+ *  and consistent regardless of where the CLI runs. */
+function expiryDate(isoTimestamp: string): string {
+  return new Date(isoTimestamp).toISOString().slice(0, 10);
+}
+
+/** The name to greet the user by: the account name the backend assigned, or
+ *  the account id when the backend has none on file (e.g. a POC account). */
+function accountLabel(cred: { account_name: string | null; account_id: string }): string {
+  return cred.account_name ?? cred.account_id;
+}
+
+/** `sonilo login`: runs the device-code flow end to end and stores the
+ *  resulting key. Reused across api bases (prod, staging, ...) by keying the
+ *  credential store on `apiBase`, so signing into staging never disturbs a
+ *  production credential. */
+export async function runLogin(
+  argv: string[],
+  deps: LoginDeps,
+  filePath?: string,
+): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      force: { type: "boolean" },
+      "no-browser": { type: "boolean" },
+      "api-base": { type: "string" },
+    },
+  });
+
+  const apiBase = values["api-base"] ?? process.env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const previous = readCredential(apiBase, filePath);
+
+  if (previous && values.force !== true) {
+    const host = new URL(apiBase).host;
+    deps.log(
+      `Already signed in as ${accountLabel(previous)} (cli: ${host}, expires ${expiryDate(previous.expires_at)}). Re-authenticate with --force.`,
+    );
+    return;
+  }
+
+  const start = await startDevice(apiBase, deps, {
+    hostname: hostname(),
+    os: process.platform,
+    version: VERSION,
+  });
+
+  deps.log(`First copy your one-time code: ${start.user_code}`);
+  deps.log(`Then open this URL to confirm: ${start.verification_uri_complete}`);
+  if (values["no-browser"] !== true) {
+    await deps.openBrowser(start.verification_uri_complete);
+  }
+
+  const token = await pollForToken(apiBase, start, deps);
+
+  const credential: StoredCredential = {
+    api_key: token.api_key,
+    key_id: token.key_id,
+    account_id: token.account_id,
+    account_name: token.account_name,
+    expires_at: token.expires_at,
+    created_at: new Date().toISOString(),
+    created_by: `sonilo-cli/${VERSION}`,
+  };
+  writeCredential(apiBase, credential, filePath);
+
+  // The new credential is already saved at this point, so a revoke failure
+  // is a note, never a login failure — the superseded key still expires on
+  // its own even if this call never lands.
+  if (previous) {
+    try {
+      const response = await deps.fetch(`${apiBase}/v1/account/keys/self`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${previous.api_key}` },
+      });
+      if (!response.ok) {
+        deps.log(`Note: could not revoke the previous key (HTTP ${response.status}).`);
+      }
+    } catch {
+      deps.log("Note: could not revoke the previous key.");
+    }
+  }
+
+  deps.log(`Signed in as ${accountLabel(token)}. Key expires ${expiryDate(token.expires_at)}.`);
+}
+
+/** Opens `url` in the platform's default browser, backgrounded and detached
+ *  so the CLI never waits on (or gets tied to the lifetime of) the browser
+ *  process. `start` on Windows is a shell built-in, not an executable, hence
+ *  routing it through `cmd /c` — the empty string after `start` is its own
+ *  window-title argument, otherwise a URL containing spaces would be
+ *  misparsed as the title. */
+function platformOpenCommand(url: string): { command: string; args: string[] } {
+  switch (process.platform) {
+    case "darwin":
+      return { command: "open", args: [url] };
+    case "win32":
+      return { command: "cmd", args: ["/c", "start", "", url] };
+    default:
+      return { command: "xdg-open", args: [url] };
+  }
+}
+
+/** The real `LoginDeps` used by the CLI binary: network `fetch`, real time
+ *  and sleep, `console.log`, and a best-effort browser launch. A machine
+ *  with no GUI browser (a server, a container) must still complete login —
+ *  it just never gets an automatic browser window — so every failure here is
+ *  swallowed rather than thrown. */
+export function defaultLoginDeps(): LoginDeps {
+  return {
+    fetch,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+    log: (line) => console.log(line),
+    openBrowser: async (url) => {
+      try {
+        const { command, args } = platformOpenCommand(url);
+        const child = spawn(command, args, { detached: true, stdio: "ignore" });
+        child.on("error", () => {
+          /* no browser available on this machine — the URL is already printed */
+        });
+        child.unref();
+      } catch {
+        /* spawn threw synchronously — same fallback as the "error" event above */
+      }
+    },
+  };
 }

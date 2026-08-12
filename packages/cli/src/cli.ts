@@ -23,6 +23,7 @@ import {
   type WaitOptions,
 } from "sonilo";
 import { VERSION } from "./version.js";
+import { defaultLoginDeps, runLogin } from "./login.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
 
@@ -30,6 +31,7 @@ Usage:
   sonilo <command> [options]
 
 Commands:
+  login                         Sign in and store an API key for future commands
   account                       Show plan limits and available services
   usage [--days <n>]            Show usage summary (default: last 30 days)
   text-to-music                 Generate music from a text prompt
@@ -44,6 +46,14 @@ Commands:
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
                                 (--poll-interval <ms>, --timeout <ms>)
+
+login options:
+  --force               Re-authenticate even if a credential is already
+                        stored for this API base.
+  --no-browser          Print the sign-in URL instead of opening it in a
+                        browser.
+  --api-base <url>      Sign in against a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
 
 text-to-music options:
   --prompt <text>       Required. What the music should sound like.
@@ -216,8 +226,10 @@ Global options:
 Environment:
   SONILO_API_KEY     Your API key (starts with sk-). Required unless --api-key
                      is passed.
+  Credentials from "sonilo login" are stored in ~/.config/sonilo/credentials.json (override the directory with XDG_CONFIG_HOME).
 
 Examples:
+  sonilo login
   sonilo account
   sonilo text-to-music --prompt "warm lo-fi piano, rain in the background" --duration 30
   sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
@@ -1154,6 +1166,7 @@ async function main(): Promise<void> {
   const { apiKeyFlag, rest } = extractApiKey(argv);
   const [command, ...commandArgs] = rest;
   const KNOWN_COMMANDS = new Set([
+    "login",
     "account",
     "usage",
     "text-to-music",
@@ -1170,6 +1183,14 @@ async function main(): Promise<void> {
   if (!KNOWN_COMMANDS.has(command ?? "")) {
     fail(`unknown command: ${command}. Run "sonilo --help" for usage.`);
   }
+
+  // "login" must be dispatched before buildClient(): buildClient exits when
+  // no API key is configured, which is exactly the situation login exists to
+  // fix (there is no key yet, or the one on disk expired).
+  if (command === "login") {
+    return runLogin(commandArgs, defaultLoginDeps());
+  }
+
   const client = buildClient(apiKeyFlag);
 
   switch (command) {

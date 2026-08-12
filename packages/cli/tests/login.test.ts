@@ -1,7 +1,18 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { pollForToken, startDevice, type DeviceStart, type LoginDeps } from "../src/login.js";
+import { readCredential, writeCredential, type StoredCredential } from "../src/credentials.js";
+import {
+  pollForToken,
+  runLogin,
+  startDevice,
+  type DeviceStart,
+  type LoginDeps,
+} from "../src/login.js";
 
 const BASE = "https://api.sonilo.com";
+const STAGING = "https://api.staging.sonilo.com";
 
 function deps(responses: Array<{ status: number; body: unknown }>): {
   d: LoginDeps;
@@ -114,5 +125,137 @@ describe("pollForToken", () => {
     d.now = () => (t += 400_000); // two ticks blow past expires_in
     await expect(pollForToken(BASE, START, d)).rejects.toThrow(/expired/i);
     expect(sleeps.length).toBeLessThan(5);
+  });
+});
+
+function tmpFile(): string {
+  return join(mkdtempSync(join(tmpdir(), "sonilo-login-")), "credentials.json");
+}
+
+function sample(overrides: Partial<StoredCredential> = {}): StoredCredential {
+  return {
+    api_key: "sk-old",
+    key_id: "key-0",
+    account_id: "acct-0",
+    account_name: "Acme",
+    expires_at: "2026-09-01T00:00:00Z",
+    created_at: "2026-08-01T00:00:00Z",
+    created_by: "sonilo-cli/0.10.0",
+    ...overrides,
+  };
+}
+
+const TOKEN = {
+  api_key: "sk-new",
+  key_id: "key-1",
+  account_id: "acct-1",
+  account_name: "Acme",
+  expires_at: "2026-11-09T04:12:00Z",
+};
+
+/** Records every fetch call (method/url/headers) and routes it to a canned
+ *  response by path, so a single mock can serve the whole login flow: device
+ *  start, the (single, immediately-successful) token poll, and the DELETE of
+ *  a superseded key. */
+function runDeps(tokenBody: unknown = TOKEN): {
+  d: LoginDeps;
+  calls: Array<{ method: string; url: string; headers: Record<string, string> }>;
+  logs: string[];
+  browserUrls: string[];
+} {
+  const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
+  const logs: string[] = [];
+  const browserUrls: string[] = [];
+  const d: LoginDeps = {
+    fetch: (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+        headers[key] = value;
+      }
+      calls.push({ method, url: String(url), headers });
+      if (String(url).endsWith("/cli/auth/device/start")) {
+        return new Response(JSON.stringify(START), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/cli/auth/device/token")) {
+        return new Response(JSON.stringify(tokenBody), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/v1/account/keys/self")) {
+        return new Response(null, { status: 200 });
+      }
+      throw new Error(`unexpected fetch call: ${method} ${String(url)}`);
+    }) as unknown as typeof fetch,
+    sleep: async () => {},
+    now: () => 0,
+    openBrowser: async (url: string) => void browserUrls.push(url),
+    log: (line: string) => void logs.push(line),
+  };
+  return { d, calls, logs, browserUrls };
+}
+
+describe("runLogin", () => {
+  it("writes the credential for the default base and prints the account and expiry", async () => {
+    const path = tmpFile();
+    const { d, logs } = runDeps();
+
+    await runLogin([], d, path);
+
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-new");
+    expect(logs.some((line) => line.includes("Signed in as Acme"))).toBe(true);
+    expect(logs.some((line) => line.includes("2026-11-09"))).toBe(true);
+  });
+
+  it("refuses to re-authenticate over an existing credential without --force", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, calls, logs } = runDeps();
+
+    await runLogin([], d, path);
+
+    expect(logs).toEqual([
+      "Already signed in as Acme (cli: api.sonilo.com, expires 2026-09-01). Re-authenticate with --force.",
+    ]);
+    expect(calls).toEqual([]);
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-old");
+  });
+
+  it("--force replaces the credential and revokes the previous key", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, calls } = runDeps();
+
+    await runLogin(["--force"], d, path);
+
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-new");
+    const revoke = calls.find((call) => call.url === `${BASE}/v1/account/keys/self`);
+    expect(revoke?.method).toBe("DELETE");
+    expect(revoke?.headers["authorization"]).toBe("Bearer sk-old");
+  });
+
+  it("--no-browser skips opening a browser but still prints the verification URL", async () => {
+    const path = tmpFile();
+    const { d, logs, browserUrls } = runDeps();
+
+    await runLogin(["--no-browser"], d, path);
+
+    expect(browserUrls).toEqual([]);
+    expect(logs.some((line) => line.includes(START.verification_uri_complete))).toBe(true);
+  });
+
+  it("--api-base writes under that base and leaves the production credential untouched", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ api_key: "sk-prod" }), path);
+    const { d } = runDeps({ ...TOKEN, api_key: "sk-staging" });
+
+    await runLogin(["--api-base", STAGING], d, path);
+
+    expect(readCredential(STAGING, path)?.api_key).toBe("sk-staging");
+    expect(readCredential(BASE, path)?.api_key).toBe("sk-prod");
   });
 });
