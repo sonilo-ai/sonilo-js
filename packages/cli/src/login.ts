@@ -261,6 +261,48 @@ export async function runLogin(
   deps.log(`Signed in as ${accountLabel(token)}. Key expires ${expiryDate(token.expires_at)}.`);
 }
 
+/** `sonilo whoami`: reports which account and key are currently active,
+ *  without ever printing the full key. Purely local — it reads the
+ *  credential file and the environment, and makes no network call — so
+ *  unlike `runLogin` it is synchronous.
+ *
+ *  `SONILO_API_KEY` always wins over a stored credential (it's what
+ *  `buildClient` in cli.ts uses too), so when both are present this says so
+ *  explicitly rather than printing the file's account as if it were active
+ *  — that mismatch is exactly the kind of thing that costs someone an hour
+ *  of debugging the wrong account. */
+export function runWhoami(
+  argv: string[],
+  env: NodeJS.ProcessEnv,
+  log: (line: string) => void,
+  filePath?: string,
+): void {
+  const { values } = parseArgs({
+    args: argv,
+    options: { "api-base": { type: "string" } },
+  });
+  const apiBase = values["api-base"] ?? env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const envKey = env["SONILO_API_KEY"];
+  const credential = readCredential(apiBase, filePath);
+
+  if (envKey !== undefined) {
+    log("source: SONILO_API_KEY (the stored credential is being ignored)");
+    return;
+  }
+
+  if (!credential) {
+    log("Not signed in. Run sonilo login.");
+    return;
+  }
+
+  const expiry = expiryDate(credential.expires_at);
+  const expired = new Date(credential.expires_at).getTime() < Date.now();
+  log(`account: ${accountLabel(credential)}`);
+  log(`key: ${credential.api_key.slice(0, 8)}...`);
+  log(`expires: ${expiry}${expired ? " (expired)" : ""}`);
+  log("source: credential file");
+}
+
 /** Opens `url` in the platform's default browser, backgrounded and detached
  *  so the CLI never waits on (or gets tied to the lifetime of) the browser
  *  process. `start` on Windows is a shell built-in, not an executable, hence

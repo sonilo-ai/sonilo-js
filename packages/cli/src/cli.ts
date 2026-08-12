@@ -23,7 +23,7 @@ import {
   type WaitOptions,
 } from "sonilo";
 import { VERSION } from "./version.js";
-import { defaultLoginDeps, runLogin } from "./login.js";
+import { defaultLoginDeps, runLogin, runWhoami } from "./login.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
 
@@ -32,6 +32,7 @@ Usage:
 
 Commands:
   login                         Sign in and store an API key for future commands
+  whoami                        Show which account and key are currently active
   account                       Show plan limits and available services
   usage [--days <n>]            Show usage summary (default: last 30 days)
   text-to-music                 Generate music from a text prompt
@@ -1167,6 +1168,7 @@ async function main(): Promise<void> {
   const [command, ...commandArgs] = rest;
   const KNOWN_COMMANDS = new Set([
     "login",
+    "whoami",
     "account",
     "usage",
     "text-to-music",
@@ -1184,11 +1186,15 @@ async function main(): Promise<void> {
     fail(`unknown command: ${command}. Run "sonilo --help" for usage.`);
   }
 
-  // "login" must be dispatched before buildClient(): buildClient exits when
-  // no API key is configured, which is exactly the situation login exists to
-  // fix (there is no key yet, or the one on disk expired).
+  // "login" and "whoami" must both be dispatched before buildClient():
+  // buildClient exits when no API key is configured, which is exactly the
+  // situation login exists to fix (there is no key yet, or the one on disk
+  // expired) and exactly the situation whoami exists to report on.
   if (command === "login") {
     return runLogin(commandArgs, defaultLoginDeps());
+  }
+  if (command === "whoami") {
+    return runWhoami(commandArgs, process.env, (line) => console.log(line));
   }
 
   const client = buildClient(apiKeyFlag);

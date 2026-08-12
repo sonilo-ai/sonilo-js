@@ -6,6 +6,7 @@ import { readCredential, writeCredential, type StoredCredential } from "../src/c
 import {
   pollForToken,
   runLogin,
+  runWhoami,
   startDevice,
   type DeviceStart,
   type LoginDeps,
@@ -257,5 +258,62 @@ describe("runLogin", () => {
 
     expect(readCredential(STAGING, path)?.api_key).toBe("sk-staging");
     expect(readCredential(BASE, path)?.api_key).toBe("sk-prod");
+  });
+});
+
+describe("runWhoami", () => {
+  it("with only a credential file, prints the account, key prefix, expiry, and source", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ api_key: "sk-abcdefghijklmnop" }), path);
+    const logs: string[] = [];
+
+    runWhoami([], {} as NodeJS.ProcessEnv, (line) => logs.push(line), path);
+
+    const out = logs.join("\n");
+    expect(out).toContain("Acme");
+    expect(out).toContain("sk-abcde"); // api_key.slice(0, 8)
+    expect(out).not.toContain("sk-abcdefghijklmnop"); // never the whole key
+    expect(out).toContain("2026-09-01");
+    expect(out).toContain("source: credential file");
+  });
+
+  it("with SONILO_API_KEY set and a credential file present, says the stored credential is ignored", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const logs: string[] = [];
+
+    runWhoami(
+      [],
+      { SONILO_API_KEY: "sk-env-key" } as unknown as NodeJS.ProcessEnv,
+      (line) => logs.push(line),
+      path,
+    );
+
+    expect(logs.join("\n")).toContain(
+      "source: SONILO_API_KEY (the stored credential is being ignored)",
+    );
+  });
+
+  it("with neither an env key nor a credential file, says not signed in and does not throw", () => {
+    const path = tmpFile();
+    const logs: string[] = [];
+
+    expect(() =>
+      runWhoami([], {} as NodeJS.ProcessEnv, (line) => logs.push(line), path),
+    ).not.toThrow();
+
+    expect(logs).toEqual(["Not signed in. Run sonilo login."]);
+  });
+
+  it("marks an expired stored credential as expired beside the date", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ expires_at: "2020-01-01T00:00:00Z" }), path);
+    const logs: string[] = [];
+
+    runWhoami([], {} as NodeJS.ProcessEnv, (line) => logs.push(line), path);
+
+    const dateLine = logs.find((line) => line.includes("2020-01-01"));
+    expect(dateLine).toBeDefined();
+    expect(dateLine).toContain("expired");
   });
 });
