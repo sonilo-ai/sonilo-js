@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { parseArgs } from "node:util";
-import { readCredential, writeCredential, type StoredCredential } from "./credentials.js";
+import {
+  readCredential,
+  removeCredential,
+  writeCredential,
+  type StoredCredential,
+} from "./credentials.js";
 import { VERSION } from "./version.js";
 
 /** The response from `POST /cli/auth/device/start`. */
@@ -301,6 +306,65 @@ export function runWhoami(
   log(`key: ${credential.api_key.slice(0, 8)}...`);
   log(`expires: ${expiry}${expired ? " (expired)" : ""}`);
   log("source: credential file");
+}
+
+/** `sonilo logout`: revokes the stored key server-side, then removes it from
+ *  the local credential file.
+ *
+ *  The revoke call is a `DELETE` on the stored key itself — it can only ever
+ *  revoke the key sending the request, so no key id or account id needs to
+ *  travel with it. `--local-only` skips that call entirely (e.g. the key was
+ *  already dealt with in the dashboard, or the API is unreachable and the
+ *  user just wants this machine to forget it).
+ *
+ *  When the revoke call fails (a non-2xx response, or the request throwing
+ *  outright — network down, DNS, etc.), the local credential is deliberately
+ *  left in place rather than removed: the key may still be active, so the
+ *  user needs `sonilo whoami` / the stored key to keep working until they
+ *  either retry `sonilo logout` or revoke it by hand in the dashboard. Only a
+ *  confirmed revoke (or `--local-only`) forgets the key locally. */
+export async function runLogout(
+  argv: string[],
+  deps: LoginDeps,
+  filePath?: string,
+): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      "local-only": { type: "boolean" },
+      "api-base": { type: "string" },
+    },
+  });
+
+  const apiBase = values["api-base"] ?? process.env["SONILO_API_URL"] ?? "https://api.sonilo.com";
+  const credential = readCredential(apiBase, filePath);
+
+  if (!credential) {
+    deps.log("Not signed in.");
+    return;
+  }
+
+  if (values["local-only"] !== true) {
+    let ok: boolean;
+    try {
+      const response = await deps.fetch(`${apiBase}/v1/account/keys/self`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${credential.api_key}` },
+      });
+      ok = response.ok;
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      deps.log(
+        "Could not revoke the key — it may still be active. Revoke it manually at /dashboard/api-keys, then run sonilo logout again to remove it locally.",
+      );
+      return;
+    }
+  }
+
+  removeCredential(apiBase, filePath);
+  deps.log("Signed out.");
 }
 
 /** Opens `url` in the platform's default browser, backgrounded and detached

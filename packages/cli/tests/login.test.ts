@@ -6,6 +6,7 @@ import { readCredential, writeCredential, type StoredCredential } from "../src/c
 import {
   pollForToken,
   runLogin,
+  runLogout,
   runWhoami,
   startDevice,
   type DeviceStart,
@@ -258,6 +259,86 @@ describe("runLogin", () => {
 
     expect(readCredential(STAGING, path)?.api_key).toBe("sk-staging");
     expect(readCredential(BASE, path)?.api_key).toBe("sk-prod");
+  });
+});
+
+/** Records every fetch call made by `runLogout` and routes every one of them
+ *  to a single canned status — logout only ever makes at most one call (the
+ *  revoke DELETE), so unlike `runDeps` there is no need to branch on path. */
+function logoutDeps(status = 200): {
+  d: LoginDeps;
+  calls: Array<{ method: string; url: string; headers: Record<string, string> }>;
+  logs: string[];
+} {
+  const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
+  const logs: string[] = [];
+  const d: LoginDeps = {
+    fetch: (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const headers: Record<string, string> = {};
+      for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+        headers[key] = value;
+      }
+      calls.push({ method, url: String(url), headers });
+      return new Response(null, { status });
+    }) as unknown as typeof fetch,
+    sleep: async () => {},
+    now: () => 0,
+    openBrowser: async () => {},
+    log: (line: string) => void logs.push(line),
+  };
+  return { d, calls, logs };
+}
+
+describe("runLogout", () => {
+  it("revokes the stored key, then removes the local credential", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, calls } = logoutDeps(200);
+
+    await runLogout([], d, path);
+
+    expect(calls).toEqual([
+      {
+        method: "DELETE",
+        url: `${BASE}/v1/account/keys/self`,
+        headers: { authorization: "Bearer sk-old" },
+      },
+    ]);
+    expect(readCredential(BASE, path)).toBeNull();
+  });
+
+  it("--local-only removes the local entry and sends no request", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, calls } = logoutDeps(200);
+
+    await runLogout(["--local-only"], d, path);
+
+    expect(calls).toEqual([]);
+    expect(readCredential(BASE, path)).toBeNull();
+  });
+
+  it("when the revoke call fails, warns the key may still be active and keeps the local credential", async () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    const { d, logs } = logoutDeps(500);
+
+    await runLogout([], d, path);
+
+    expect(logs.some((line) => line.includes("may still be active"))).toBe(true);
+    expect(logs.some((line) => line.includes("/dashboard/api-keys"))).toBe(true);
+    expect(readCredential(BASE, path)).toEqual(sample());
+  });
+
+  it("with no stored credential, prints Not signed in and sends no request", async () => {
+    const path = tmpFile();
+    const { d, calls, logs } = logoutDeps(200);
+
+    await runLogout([], d, path);
+
+    expect(logs).toEqual(["Not signed in."]);
+    expect(calls).toEqual([]);
   });
 });
 

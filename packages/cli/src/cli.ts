@@ -23,7 +23,7 @@ import {
   type WaitOptions,
 } from "sonilo";
 import { VERSION } from "./version.js";
-import { defaultLoginDeps, runLogin, runWhoami } from "./login.js";
+import { defaultLoginDeps, runLogin, runLogout, runWhoami } from "./login.js";
 
 const HELP = `sonilo — command-line interface for the Sonilo API
 
@@ -32,6 +32,7 @@ Usage:
 
 Commands:
   login                         Sign in and store an API key for future commands
+  logout                        Revoke the stored key and forget it locally
   whoami                        Show which account and key are currently active
   account                       Show plan limits and available services
   usage [--days <n>]            Show usage summary (default: last 30 days)
@@ -54,6 +55,12 @@ login options:
   --no-browser          Print the sign-in URL instead of opening it in a
                         browser.
   --api-base <url>      Sign in against a non-default API deployment.
+                        Default: SONILO_API_URL, or https://api.sonilo.com
+
+logout options:
+  --local-only          Remove the local credential only; do not revoke the
+                        key server-side.
+  --api-base <url>      Sign out of a non-default API deployment.
                         Default: SONILO_API_URL, or https://api.sonilo.com
 
 text-to-music options:
@@ -1168,6 +1175,7 @@ async function main(): Promise<void> {
   const [command, ...commandArgs] = rest;
   const KNOWN_COMMANDS = new Set([
     "login",
+    "logout",
     "whoami",
     "account",
     "usage",
@@ -1186,12 +1194,16 @@ async function main(): Promise<void> {
     fail(`unknown command: ${command}. Run "sonilo --help" for usage.`);
   }
 
-  // "login" and "whoami" must both be dispatched before buildClient():
-  // buildClient exits when no API key is configured, which is exactly the
-  // situation login exists to fix (there is no key yet, or the one on disk
-  // expired) and exactly the situation whoami exists to report on.
+  // "login", "logout", and "whoami" must all be dispatched before
+  // buildClient(): buildClient exits when no API key is configured, which is
+  // exactly the situation login exists to fix (there is no key yet, or the
+  // one on disk expired), exactly the situation logout produces on purpose,
+  // and exactly the situation whoami exists to report on.
   if (command === "login") {
     return runLogin(commandArgs, defaultLoginDeps());
+  }
+  if (command === "logout") {
+    return runLogout(commandArgs, defaultLoginDeps());
   }
   if (command === "whoami") {
     return runWhoami(commandArgs, process.env, (line) => console.log(line));
