@@ -21,7 +21,7 @@
     "client.videoToSound and client.videoToVideoSound score one clip with a music bed AND sound effects in a single call — prefer them over chaining video-to-music with video-to-sfx, which is charged twice.",
     "Both sound endpoints are async-only and share params: musicPrompt, sfxPrompt (NOT a single prompt), segments, preserveSpeech, ducking. videoToSound returns mixed audio; videoToVideoSound returns the video with that track muxed in.",
     "A SoundResult's combined render is result.output_url (output_type says \"audio\" or \"video\"). music, music_processed and sfx are the individual stems; music_processed appears only when preserveSpeech or ducking altered the music bed.",
-    "ducking is default-ON server-side for the sound endpoints: leave it unset to keep it on, and pass ducking: false only to opt out. Never send an explicit false just to mean \"default\" — that disables it.",
+    "ducking is default-OFF server-side on every endpoint: leave it unset to keep the default, pass ducking: true to opt in. On videoToSound, ducking: true is also what pulls the source's own speech into the result at all.",
     "Result media (audio.url, or output_url for the sound endpoints) is a short-lived presigned URL on a different host, not the API's own domain. Download it with the SDK's download() helper or fetch().",
     "Never send the Authorization header to a presigned result URL.",
     "Catch AuthenticationError (401), PaymentRequiredError (402), RateLimitError (429, has retryAfter) and TaskFailedError (status \"failed\") separately rather than one generic branch — callers usually handle these differently.",
