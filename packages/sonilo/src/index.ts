@@ -17,6 +17,7 @@ export { VERSION } from "./version.js";
 export type {
   AccountServices,
   AudioChunkEvent,
+  AudioDuckingParams,
   BaseTaskResult,
   CompleteEvent,
   CostEvent,
@@ -25,6 +26,7 @@ export type {
   DubbingLanguage,
   DubbingParams,
   DubbingResult,
+  DuckingResult,
   ErrorEvent,
   MusicMediaEntry,
   MusicMuxEntry,

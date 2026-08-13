@@ -176,6 +176,12 @@ sonilo video-to-video-music --video clip.mp4 --prompt "tense, driving synths" --
 # Add sound effects and get the video back with them muxed in (async only)
 sonilo video-to-video-sfx --video clip.mp4 --prompt "footsteps, distant thunder" --output foley.mp4
 
+# Duck an existing music bed under a voice track (async only). Nothing is
+# generated — both inputs already exist. The voice may be audio or a video
+# (a video comes back as a new .mp4 with the ducked mix muxed in); the music
+# must be audio. Local files and URLs mix freely across the two inputs.
+sonilo audio-ducking --voice interview.mp4 --music-url https://example.com/bed.wav --output ducked.mp4
+
 # Dub a video into other languages (async only, one file per language)
 sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
 

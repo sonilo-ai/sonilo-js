@@ -248,6 +248,42 @@ Input videos may be at most 180 seconds long.
 Use `submit()` instead of `generate()` to get a `task_id` back immediately and
 poll it yourself with `client.tasks.wait<SoundResult>(taskId)`.
 
+## Audio ducking
+
+`client.audioDucking.submit()` / `.generate()` mix an existing music bed under
+an existing voice track, dipping the music wherever the voice speaks and
+lifting it back in the gaps. Nothing is generated — both inputs are yours.
+Reach for it when the music is fixed or external; when the music is being
+generated for the same clip anyway, `videoToSound` or `videoToMusic` with
+`ducking: true` duck internally as part of that one call instead.
+
+```ts
+import { SoniloClient, download } from "sonilo";
+import { writeFile } from "node:fs/promises";
+
+const client = new SoniloClient();
+
+const result = await client.audioDucking.generate({
+  voice: "./interview.mp4", // Node path; File/Blob in the browser, or `voiceUrl`
+  musicUrl: "https://example.com/bed.wav",
+});
+
+await writeFile(
+  result.output_type === "video" ? "ducked.mp4" : "ducked.wav",
+  await download(result.output_url!),
+);
+```
+
+Params: exactly one of `voice` / `voiceUrl` and exactly one of `music` /
+`musicUrl` (a local input and a URL mix freely across the two). The **voice**
+may be audio or video — a video's own audio track becomes the voice, and the
+ducked mix is muxed back into a new video, so the result is a `.mp4` instead
+of a `.wav`. The **music** must be audio: the API never probes it for a video
+stream, so a video there is silently mishandled rather than rejected. Each
+input is capped at 360 seconds. Async-only; the result is a `DuckingResult`
+carrying the same flat `output_url` / `output_type` envelope as
+`videoToSound`, with no stems.
+
 ## Dubbing
 
 `client.dubbing.submit()` / `.generate()` dub a video into one or more target

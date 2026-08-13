@@ -519,6 +519,36 @@ export interface SoundResult extends BaseTaskResult {
   outputs?: SoundOutputEntry[];
 }
 
+/** Params for `audioDucking`: mix an existing music bed under an existing
+ * voice track, ducking the music wherever the voice speaks. Exactly one of
+ * `voice`/`voiceUrl` and exactly one of `music`/`musicUrl`; a local input and
+ * a URL may be mixed across the two.
+ *
+ * The voice may be audio or video (`VideoInput` is the SDK's generic media
+ * input union) — a video's own audio track becomes the voice, and the ducked
+ * mix is re-muxed back into a new video. The music must be audio: the backend
+ * never probes it for a video stream, so a video there would be silently
+ * mishandled. Each input is capped at 360 seconds server-side. */
+export interface AudioDuckingParams {
+  voice?: VideoInput;
+  voiceUrl?: string;
+  music?: VideoInput;
+  musicUrl?: string;
+}
+
+/** Result of an `audioDucking` task (`tasks.get`) or its final state
+ * (`generate`). Same flat envelope as `SoundResult`, but a ducking task
+ * renders exactly one artifact and no stems: a `.wav` (`output_type`
+ * "audio"), or a `.mp4` with the ducked mix re-muxed in (`output_type`
+ * "video") when the voice input was a video. Pass `output_url` to
+ * `download()`. */
+export interface DuckingResult extends BaseTaskResult {
+  output_url?: string;
+  output_type?: "audio" | "video";
+  output_bytes?: number;
+  duration_seconds?: number;
+}
+
 /**
  * A target language for /v1/dubbing. The union stays open (`string & {}`) so a
  * language added server-side still type-checks against an older SDK — the

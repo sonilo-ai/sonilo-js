@@ -21,13 +21,14 @@
     "client.videoToSound and client.videoToVideoSound score one clip with a music bed AND sound effects in a single call — prefer them over chaining video-to-music with video-to-sfx, which is charged twice.",
     "Both sound endpoints are async-only and share params: musicPrompt, sfxPrompt (NOT a single prompt), segments, preserveSpeech, ducking. videoToSound returns mixed audio; videoToVideoSound returns the video with that track muxed in.",
     "A SoundResult's combined render is result.output_url (output_type says \"audio\" or \"video\"). music, music_processed and sfx are the individual stems; music_processed appears only when preserveSpeech or ducking altered the music bed.",
-    "ducking is default-ON server-side for the sound endpoints: leave it unset to keep it on, and pass ducking: false only to opt out. Never send an explicit false just to mean \"default\" — that disables it.",
+    "ducking is default-OFF server-side on every endpoint: leave it unset to keep the default, pass ducking: true to opt in. On videoToSound, ducking: true is also what pulls the source's own speech into the result at all.",
     "Result media (audio.url, or output_url for the sound endpoints) is a short-lived presigned URL on a different host, not the API's own domain. Download it with the SDK's download() helper or fetch().",
     "Never send the Authorization header to a presigned result URL.",
     "Catch AuthenticationError (401), PaymentRequiredError (402), RateLimitError (429, has retryAfter) and TaskFailedError (status \"failed\") separately rather than one generic branch — callers usually handle these differently.",
     "video / videoUrl accept exactly one of the two, never both and never neither — validate before constructing a request.",
     "Self-serve accounts start with free runs per endpoint (2 each for text-to-music, text-to-sfx, audio-ducking; 1 each for the other video endpoints), then bill normally. Dubbing has ZERO free runs. A first call succeeding is not evidence billing is set up.",
     "Before a paid call, read (await client.account.services()).trial?.[service]?.remaining and degrade gracefully at 0: that call throws TrialExhaustedError (402 trial_exhausted), which no retry fixes — prompt for a payment method. trial may be absent.",
+    "client.audioDucking ducks an EXISTING music bed under an EXISTING voice track; nothing is generated. One of voice/voiceUrl, one of music/musicUrl. Voice may be audio or video (video returns a new .mp4); music must be audio. Result: output_url, no stems.",
     "client.dubbing dubs one video into several languages in a single async call. languages is an array of codes (en, zh_cn, ja, ko, pt, es, de, fr, it, ru); omit it for the default [\"zh_cn\", \"es\", \"fr\"]. You are billed per language, with no free trial runs.",
     "A DubbingResult has no audio/video/output_url. Its results live in result.outputs, a map of language code to dubbed .mp4 URL. dubbing's videoUrl must be https — plain http is rejected by the pipeline, not just discouraged."
   ]
