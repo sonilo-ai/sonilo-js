@@ -499,6 +499,55 @@ describe("runWhoami", () => {
     expect(logs).toEqual(["Not signed in. Run sonilo login."]);
   });
 
+  // The return value is what cli.ts turns into the process exit code. Scripts
+  // and agents branch on `sonilo whoami` to choose between using the CLI and
+  // running setup; while this always reported success, every one of them took
+  // the signed-in branch with no credential on disk.
+  it("reports not-signed-in to the caller, so whoami can exit non-zero", () => {
+    const path = tmpFile();
+
+    expect(runWhoami([], {} as NodeJS.ProcessEnv, () => {}, path)).toBe(false);
+  });
+
+  it("reports signed in for a stored credential, and for SONILO_API_KEY", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample(), path);
+    expect(runWhoami([], {} as NodeJS.ProcessEnv, () => {}, path)).toBe(true);
+
+    expect(
+      runWhoami(
+        [],
+        { SONILO_API_KEY: "sk-env-key" } as unknown as NodeJS.ProcessEnv,
+        () => {},
+        tmpFile(),
+      ),
+    ).toBe(true);
+  });
+
+  // An expired credential names a real account and `sonilo login` fixes it.
+  // Calling that "not signed in" would route callers to first-time setup.
+  it("still reports signed in when the stored credential has expired", () => {
+    const path = tmpFile();
+    writeCredential(BASE, sample({ expires_at: "2020-01-01T00:00:00Z" }), path);
+
+    expect(runWhoami([], {} as NodeJS.ProcessEnv, () => {}, path)).toBe(true);
+  });
+
+  // The API sends `account_name: " "` for an account with no display name, and
+  // `??` let that single space through as the label — printing `account: ` with
+  // nothing after it, which reads exactly like a credential that never loaded.
+  it("falls back to the account id when the account name is blank", () => {
+    for (const blank of [" ", "", "   ", null]) {
+      const path = tmpFile();
+      writeCredential(BASE, sample({ account_name: blank }), path);
+      const logs: string[] = [];
+
+      runWhoami([], {} as NodeJS.ProcessEnv, (line) => logs.push(line), path);
+
+      expect(logs.join("\n")).toContain("account: acct-0");
+    }
+  });
+
   it("marks an expired stored credential as expired beside the date", () => {
     const path = tmpFile();
     writeCredential(BASE, sample({ expires_at: "2020-01-01T00:00:00Z" }), path);

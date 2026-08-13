@@ -1323,9 +1323,14 @@ async function main(): Promise<void> {
     return runAuthCommand(() => runLogout(commandArgs, defaultLoginDeps()));
   }
   if (command === "whoami") {
-    return runAuthCommand(() =>
-      runWhoami(commandArgs, process.env, (line) => console.log(line)),
-    );
+    return runAuthCommand(() => {
+      const signedIn = runWhoami(commandArgs, process.env, (line) => console.log(line));
+      // `gh auth status` sets the precedent: a status command that cannot be
+      // branched on is not a status command. Scripts and agents test this to
+      // decide between using the CLI and running setup, and exiting 0 with no
+      // credential sent every one of them down the wrong branch.
+      if (!signedIn) process.exitCode = 1;
+    });
   }
 
   const client = buildClient(apiKeyFlag);

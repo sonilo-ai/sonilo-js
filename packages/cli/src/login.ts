@@ -186,8 +186,13 @@ function expiryDate(isoTimestamp: string): string {
 
 /** The name to greet the user by: the account name the backend assigned, or
  *  the account id when the backend has none on file (e.g. a POC account). */
+/** `??` was not enough: the API returns `account_name: " "` for an account with
+ *  no display name set, and a single space is neither null nor undefined, so it
+ *  won an unnamed account the label `" "` and printed `account: ` with nothing
+ *  after it. Trim first and fall back on any blank, so the id — which is always
+ *  present — shows instead of a line that reads as "not signed in". */
 function accountLabel(cred: { account_name: string | null; account_id: string }): string {
-  return cred.account_name ?? cred.account_id;
+  return cred.account_name?.trim() || cred.account_id;
 }
 
 /** `sonilo login`: runs the device-code flow end to end and stores the
@@ -286,13 +291,17 @@ export async function runLogin(
  *  `buildClient` in cli.ts uses too), so when both are present this says so
  *  explicitly rather than printing the file's account as if it were active
  *  — that mismatch is exactly the kind of thing that costs someone an hour
- *  of debugging the wrong account. */
+ *  of debugging the wrong account.
+ *
+ *  Returns whether a credential is active, so the caller can exit non-zero when
+ *  there is none. The boolean rather than `process.exitCode` here keeps this
+ *  callable from tests without every call leaving the runner's exit code at 1. */
 export function runWhoami(
   argv: string[],
   env: NodeJS.ProcessEnv,
   log: (line: string) => void,
   filePath?: string,
-): void {
+): boolean {
   const { values } = parseArgs({
     args: argv,
     options: { "api-base": { type: "string" } },
@@ -315,12 +324,12 @@ export function runWhoami(
         ? "source: SONILO_API_KEY (the stored credential is being ignored)"
         : "source: SONILO_API_KEY",
     );
-    return;
+    return true;
   }
 
   if (!credential) {
     log("Not signed in. Run sonilo login.");
-    return;
+    return false;
   }
 
   const expiry = expiryDate(credential.expires_at);
@@ -329,6 +338,11 @@ export function runWhoami(
   log(`key: ${credential.api_key.slice(0, 8)}...`);
   log(`expires: ${expiry}${expired ? " (expired)" : ""}`);
   log("source: credential file");
+  // An expired credential still counts as signed in for the exit code: it names
+  // a real account, the line says "(expired)", and `sonilo login` is the fix.
+  // Reporting "not signed in" for it would send callers down the setup path
+  // when a re-auth is what they need.
+  return true;
 }
 
 /** `sonilo logout`: revokes the stored key server-side, then removes it from
