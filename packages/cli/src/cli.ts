@@ -9,6 +9,7 @@ import {
   download,
   type DubbingParams,
   type DubbingResult,
+  type DuckingResult,
   type MusicMediaEntry,
   type MusicTaskResult,
   type Segment,
@@ -45,6 +46,7 @@ Commands:
   video-to-video-sound          Same as video-to-sound, muxed back into the video
   video-to-video-music          Score a video and get the video back with music
   video-to-video-sfx            Add sound effects and get the video back
+  audio-ducking                 Duck an existing music bed under a voice track
   dubbing                       Dub a video into other languages
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
@@ -199,6 +201,22 @@ video-to-video-sfx options (async-only, writes a video):
   --output <path>         Where to save the video (default: ./output.mp4)
   --segments <json>       Per-segment SFX prompts: [{start, end, prompt}, ...]
                           (see "Segments" below)
+
+audio-ducking options (async-only):
+  --voice <path>         Required (or --voice-url). Local voice track. May be
+                         audio or video: a video's own audio track becomes the
+                         voice, and the ducked mix is muxed back into a new
+                         video.
+  --voice-url <url>      Required (or --voice). Remote voice audio/video.
+  --music <path>         Required (or --music-url). Local music bed. Audio
+                         only (wav, mp3, m4a, aac, ogg, flac) — the API does
+                         not detect a video here, so the CLI rejects one.
+  --music-url <url>      Required (or --music). Remote music audio.
+  --output <path>        Where to save the result (default: ./output.<ext>).
+                         The result is a .wav, or a .mp4 when the voice input
+                         was a video.
+  Both inputs already exist — nothing is generated. Each is capped at 360 sec
+  server-side. A local file and a URL may be mixed across the two inputs.
 
 Segments:
   --segments takes a JSON array, and accepts three forms for the value:
@@ -1097,6 +1115,60 @@ export async function runVideoToVideoSfx(client: SoniloClient, argv: string[]): 
   await waitAndWriteVideo(client, task, values.output);
 }
 
+/** The music-bed extensions `audio-ducking` accepts for a local `--music`
+ * file — the MCP server's `_AUDIO_EXTS`, kept identical so the two surfaces
+ * accept and reject the same files. A whitelist (not a video-extension
+ * blacklist) because the failure it guards against is silent: the API never
+ * probes the music input for a video stream, so a video sent there is
+ * mishandled without an error. The voice input needs no such guard — it may
+ * legitimately be audio or video, and the API probes it. */
+const MUSIC_AUDIO_EXTS = new Set([".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac"]);
+
+export async function runAudioDucking(client: SoniloClient, argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      voice: { type: "string" },
+      "voice-url": { type: "string" },
+      music: { type: "string" },
+      "music-url": { type: "string" },
+      output: { type: "string" },
+    },
+  });
+  if ((values.voice === undefined) === (values["voice-url"] === undefined)) {
+    fail("pass exactly one of --voice or --voice-url");
+  }
+  if ((values.music === undefined) === (values["music-url"] === undefined)) {
+    fail("pass exactly one of --music or --music-url");
+  }
+  if (values.music !== undefined) {
+    const dot = values.music.lastIndexOf(".");
+    const ext = dot >= 0 ? values.music.slice(dot).toLowerCase() : "";
+    if (!MUSIC_AUDIO_EXTS.has(ext)) {
+      fail(
+        `--music must be an audio file (${[...MUSIC_AUDIO_EXTS].join(", ")}) — ` +
+          "the API does not detect a video here and would mishandle it. " +
+          "The voice input is the one that may be a video.",
+      );
+    }
+  }
+  const task = await client.audioDucking.submit({
+    voice: values.voice,
+    voiceUrl: values["voice-url"],
+    music: values.music,
+    musicUrl: values["music-url"],
+  });
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<DuckingResult>(task.task_id);
+  const url = result.output_url;
+  if (!url) fail("task succeeded but returned no output");
+  // Default output name follows what actually came back: a .wav, or a .mp4
+  // when the voice input was a video. An explicit --output is used verbatim,
+  // same as the video-to-video commands.
+  const fallbackExt = result.output_type === "video" ? "mp4" : "wav";
+  await writeAudio(await download(url), outputPath(values.output, extFromUrl(url, fallbackExt)));
+}
+
 /** Turn one `--output` value into a per-language path: `clip.mp4` + `es`
  * becomes `clip.es.mp4`. A dubbing task returns one video per language, so a
  * single literal destination cannot express the result; this mirrors the
@@ -1231,6 +1303,7 @@ async function main(): Promise<void> {
     "video-to-video-sound",
     "video-to-video-music",
     "video-to-video-sfx",
+    "audio-ducking",
     "dubbing",
     "tasks",
   ]);
@@ -1280,6 +1353,8 @@ async function main(): Promise<void> {
       return runVideoToVideoMusic(client, commandArgs);
     case "video-to-video-sfx":
       return runVideoToVideoSfx(client, commandArgs);
+    case "audio-ducking":
+      return runAudioDucking(client, commandArgs);
     case "dubbing":
       return runDubbing(client, commandArgs);
     case "tasks": {
