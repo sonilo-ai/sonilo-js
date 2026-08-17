@@ -15,6 +15,10 @@
 
   New exported types: `VideoAnalysisParams`, `VideoAnalysisResult`, `AnalysisSegment`, `AnalysisVariation`.
 
+- 8ada33d: `sonilo whoami` is now usable as a check. It exits 1 when there is no credential instead of exiting 0 while printing "Not signed in", so scripts and agents can branch on it the way they branch on `gh auth status`; an expired credential still exits 0, since it names a real account and wants `sonilo login` rather than first-time setup. It also no longer prints an empty `account:` line for an account with no display name — the API sends `account_name: " "` and the nullish fallback let that single space through, which read exactly like a credential that had failed to load.
+
+  Recorded after the fact: this shipped in 0.14.0 but was missing from that release's notes, because #53 landed on `main` without a changeset. If a script broke on `whoami` returning 1, 0.14.0 is the version that did it.
+
 ### Patch Changes
 
 - Updated dependencies [a01f3fe]
