@@ -127,6 +127,53 @@ if (result.ducked) {
 }
 ```
 
+### Stems (async)
+
+Set `stems: true` to also split the generated track into four separated
+stems — `drums`, `bass`, `vocals`, `other`. It is **free of charge**, and
+available on `textToMusic` and `videoToMusic`. It requires the async task API
+(`mode: "async"` — the backend rejects it on the plain stream with a 400), so
+it is only meaningful via `submit()`; on `videoToMusic` it splits the
+**generated** music, never the source video's own audio.
+
+When separation succeeds, the result gains a `stems` array with one entry per
+stream: `{ stream_index, drums, bass, vocals, other }`, each stem an ordinary
+media object (`url`, `content_type`, `file_size`) you can pass to
+`download()`. **Look entries up by `stream_index`, never by array position** —
+`stems` carries only the streams that separated successfully, so it can be
+shorter than `audio`.
+
+Failures land in `stems_error`, a string present when separation failed wholly
+or in part, or was skipped. It can appear **alongside a partial `stems`
+array**, so never treat it as "no stems" — check `stems` itself for what did
+arrive. Either way the generated `audio` is unaffected.
+
+Separation runs after generation and typically adds 2-6 minutes to the wait
+(it gives up after 30), so raise `tasks.wait`'s `timeout` beyond the 10-minute
+default. The stems normally follow the request's `outputFormat`; each stem's
+own `content_type` reports what was actually delivered.
+
+```ts
+const task = await client.textToMusic.submit({
+  prompt: "warm lo-fi piano",
+  duration: 30,
+  stems: true, // free — adds drums/bass/vocals/other alongside the mix
+});
+const result = await client.tasks.wait<MusicTaskResult>(task.task_id, {
+  timeout: 2_400_000, // separation can add up to 30 minutes
+});
+
+if (result.stems_error) console.warn(result.stems_error); // may be partial
+for (const track of result.audio ?? []) {
+  const split = result.stems?.find((s) => s.stream_index === track.stream_index);
+  if (!split) continue; // this stream did not separate — see stems_error
+  await writeFile("drums.m4a", await download(split.drums));
+  await writeFile("bass.m4a", await download(split.bass));
+  await writeFile("vocals.m4a", await download(split.vocals));
+  await writeFile("other.m4a", await download(split.other));
+}
+```
+
 ### Variants (async)
 
 `variantsNum` generates several distinct music variants in one request (1-10,

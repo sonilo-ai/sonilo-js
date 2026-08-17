@@ -50,9 +50,9 @@ export class VideoToMusic {
   /**
    * Submit an async video-to-music task; poll its result with
    * `client.tasks.wait<MusicTaskResult>(task.task_id)`. Required for
-   * `isolateVocals`/`preserveSpeech`, a non-m4a `outputFormat`, and
-   * `variantsNum` above 1 — the backend rejects all of these on the plain
-   * stream, and they only ever run in async mode.
+   * `isolateVocals`/`preserveSpeech`, a non-m4a `outputFormat`,
+   * `variantsNum` above 1, and `stems` — the backend rejects all of these on
+   * the plain stream, and they only ever run in async mode.
    */
   async submit(params: VideoToMusicParams): Promise<SfxTask> {
     if ((params.video === undefined) === (params.videoUrl === undefined)) {
@@ -67,14 +67,15 @@ export class VideoToMusic {
       // async. Checking != "m4a" rather than == "wav" keeps this correct
       // as formats are added (mp3 landed after the original check).
       (params.outputFormat !== undefined && params.outputFormat !== "m4a") ||
-      (params.variantsNum !== undefined && params.variantsNum > 1);
+      (params.variantsNum !== undefined && params.variantsNum > 1) ||
+      params.stems !== undefined;
     // submit() always wants an async task ack, never a stream. Default to
     // async; only object if the caller explicitly asked for stream while
     // also requesting an async-only feature.
     if (mode === undefined) mode = "async";
     if (needsAsync && mode !== "async") {
       throw new SoniloError(
-        'isolateVocals/preserveSpeech/ducking/outputFormat other than "m4a"/variantsNum > 1 require mode: "async"',
+        'isolateVocals/preserveSpeech/ducking/stems/outputFormat other than "m4a"/variantsNum > 1 require mode: "async"',
       );
     }
     const form = new FormData();
@@ -103,6 +104,9 @@ export class VideoToMusic {
     }
     if (params.variantsNum !== undefined) {
       form.set("variants_num", String(params.variantsNum));
+    }
+    if (params.stems !== undefined) {
+      form.set("stems", String(params.stems));
     }
     // Explicit undefined check: 0 is a meaningful value and must go out.
     if (params.promptInfluence !== undefined) {

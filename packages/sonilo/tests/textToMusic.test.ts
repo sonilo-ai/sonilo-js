@@ -149,6 +149,33 @@ describe("textToMusic.submit", () => {
     const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.has("variants_num")).toBe(false);
   });
+
+  it("posts stems when set", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "tm4", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.textToMusic.submit({ prompt: "lofi", duration: 10, stems: true });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("stems")).toBe("true");
+    expect(form.get("mode")).toBe("async");
+  });
+
+  it("omits stems when unset so the backend default applies", async () => {
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ task_id: "tm5", status: "processing" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    await client.textToMusic.submit({ prompt: "lofi", duration: 10 });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("stems")).toBe(false);
+  });
 });
 
 describe("textToMusic.stream ignores variantsNum", () => {
@@ -157,5 +184,12 @@ describe("textToMusic.stream ignores variantsNum", () => {
     await client.textToMusic.generate({ prompt: "p", duration: 10, variantsNum: 3 });
     const form = calls[0]!.init.body as FormData;
     expect(form.has("variants_num")).toBe(false);
+  });
+
+  it("never sends stems on the plain stream — the backend 400s it there", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.textToMusic.generate({ prompt: "p", duration: 10, stems: true });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("stems")).toBe(false);
   });
 });

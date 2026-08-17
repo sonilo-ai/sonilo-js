@@ -36,8 +36,8 @@ export class TextToMusic {
   /**
    * Submit an async text-to-music task; poll with
    * `client.tasks.wait<MusicTaskResult>(task.task_id)`. Required for
-   * a non-m4a `outputFormat` and `variantsNum` above 1. `stream()`/`generate()`
-   * remain the streaming path.
+   * a non-m4a `outputFormat`, `variantsNum` above 1, and `stems`.
+   * `stream()`/`generate()` remain the streaming path.
    */
   async submit(params: TextToMusicParams): Promise<SfxTask> {
     const mode = params.mode ?? "async";
@@ -56,6 +56,9 @@ export class TextToMusic {
     }
     if (params.variantsNum !== undefined) {
       form.set("variants_num", String(params.variantsNum));
+    }
+    if (params.stems !== undefined) {
+      form.set("stems", String(params.stems));
     }
     const res = await this.client.request("/v1/text-to-music", {
       method: "POST",

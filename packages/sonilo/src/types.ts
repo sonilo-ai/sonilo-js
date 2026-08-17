@@ -90,6 +90,16 @@ export interface TextToMusicParams {
    * meaningful via `submit()`; `stream()`/`generate()` never send it, since
    * they always request a plain stream. */
   variantsNum?: number;
+  /** Also split the generated track into four separated stems — `drums`,
+   * `bass`, `vocals`, `other` — delivered on the task result's `stems`
+   * array. Free of charge. Requires `mode: "async"` (the backend rejects it
+   * on the plain stream with a 400), so it is only meaningful via
+   * `submit()`; `stream()`/`generate()` never send it. Separation runs after
+   * generation and typically adds 2-6 minutes to the wait (it gives up after
+   * 30), so raise `tasks.wait`'s `timeout` accordingly. See `StemsEntry` for
+   * the result shape, and `MusicTaskResult.stems_error` for how failures are
+   * reported. */
+  stems?: boolean;
   /** Bounds the stream: aborting this cancels the in-flight generation.
    * Passed straight through to `fetch` — it is never rewrapped as
    * RequestTimeoutError, since the client's own absolute timeout does not
@@ -152,6 +162,17 @@ export interface VideoToMusicParams {
    * default applies; `0` is a meaningful value and is sent. Out-of-range
    * values are rejected server-side with a 422. */
   promptInfluence?: number;
+  /** Also split the generated music into four separated stems — `drums`,
+   * `bass`, `vocals`, `other` — delivered on the task result's `stems`
+   * array. It splits the GENERATED music, never the source video's own
+   * audio. Free of charge. Requires `mode: "async"` (auto-selected by
+   * `submit()`; the backend rejects it on the plain stream with a 400), so
+   * it is only meaningful via `submit()` — `stream()`/`generate()` never
+   * send it. Separation runs after generation and typically adds 2-6
+   * minutes to the wait (it gives up after 30), so raise `tasks.wait`'s
+   * `timeout` accordingly. See `StemsEntry` for the result shape, and
+   * `MusicTaskResult.stems_error` for how failures are reported. */
+  stems?: boolean;
 }
 
 /** One service's free-trial allowance. `remaining` is already floored at 0,
@@ -302,6 +323,22 @@ export interface MusicTitle {
   display_tags?: string[];
 }
 
+/** The four separated stems of one generated stream, present when the
+ * request set `stems: true`. Each stem is an ordinary media object
+ * (`url` / `content_type` / `file_size`), so any of them can be passed to
+ * `download()`. The stems normally follow the request's `outputFormat`;
+ * each stem's own `content_type` reports what was actually delivered. */
+export interface StemsEntry {
+  /** Which `audio` entry this stems set belongs to. Match on this field,
+   * never on array position — `stems` carries only the streams that
+   * separated successfully, so it can be shorter than `audio`. */
+  stream_index: number;
+  drums: SfxMedia;
+  bass: SfxMedia;
+  vocals: SfxMedia;
+  other: SfxMedia;
+}
+
 /** State of an async video-to-music task (`tasks.get`) or its final result
  * (`tasks.wait<MusicTaskResult>()`). Only reachable via `videoToMusic.submit()`
  * with `mode: "async"`. */
@@ -317,6 +354,16 @@ export interface MusicTaskResult extends BaseTaskResult {
   /** Music ducked under the source voice (per variant when `variantsNum` is
    * above 1); present only when `ducking` ran. */
   ducked?: MusicMediaEntry[];
+  /** Separated stems, one entry per stream that separated successfully;
+   * only appears when the request set `stems: true`. Look entries up by
+   * `stream_index`, never by array position — the array can be shorter than
+   * `audio` when separation failed for some streams (see `stems_error`). */
+  stems?: StemsEntry[];
+  /** Why stem separation failed wholly or in part, or was skipped. It can
+   * appear ALONGSIDE a partial `stems` array, so never treat its presence as
+   * "no stems" — check `stems` itself for what did arrive. Independent of
+   * the task's own `status`/`error`: the generation is intact either way. */
+  stems_error?: string;
   /** Variant 0's title — the top-level field always names the first variant,
    * even when `variantsNum` produced others with their own titles on
    * `audio[]`. */

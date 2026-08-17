@@ -248,6 +248,36 @@ describe("videoToMusic.submit", () => {
     expect(form.has("prompt_influence")).toBe(false);
   });
 
+  it("posts stems and defaults mode to async when stems is set", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({
+      videoUrl: "https://example.com/v.mp4",
+      stems: true,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("stems")).toBe("true");
+  });
+
+  it("omits stems when unset so the backend default applies", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.videoToMusic.submit({ videoUrl: "https://example.com/v.mp4" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("stems")).toBe(false);
+  });
+
+  it("rejects stems with an explicit non-async mode without making a request", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await expect(
+      client.videoToMusic.submit({
+        videoUrl: "https://example.com/v.mp4",
+        mode: "stream",
+        stems: true,
+      }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    expect(calls.length).toBe(0);
+  });
+
 });
 
 describe("videoToMusic.stream ignores variantsNum", () => {
@@ -259,6 +289,16 @@ describe("videoToMusic.stream ignores variantsNum", () => {
     });
     const form = calls[0]!.init.body as FormData;
     expect(form.has("variants_num")).toBe(false);
+  });
+
+  it("never sends stems on the plain stream — the backend 400s it there", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS));
+    await client.videoToMusic.generate({
+      videoUrl: "https://example.com/v.mp4",
+      stems: true,
+    });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.has("stems")).toBe(false);
   });
 });
 
