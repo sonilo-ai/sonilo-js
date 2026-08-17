@@ -593,3 +593,51 @@ export interface DubbingResult extends BaseTaskResult {
    */
   outputs?: Record<string, string>;
 }
+
+export interface VideoAnalysisParams {
+  /** Exactly one of `video` / `videoUrl`. */
+  video?: VideoInput;
+  /** Exactly one of `video` / `videoUrl`. */
+  videoUrl?: string;
+  /** Optional guidance for the analysis, at most 2000 characters. */
+  prompt?: string;
+  /**
+   * How many independent creative briefs to author for the same video
+   * (1-5, default 1). Billed per brief.
+   */
+  variantsNum?: number;
+}
+
+/** One time-aligned section of the analyzed video, with the scoring
+ * direction for that stretch. Bounds are whole seconds — the backend
+ * truncates any fractional upstream bound before it reaches the envelope. */
+export interface AnalysisSegment {
+  start: number;
+  end: number;
+  /** The backend always emits one, defaulting to the string `"none"`. */
+  label: string;
+  prompt: string;
+}
+
+/** One independent creative brief for the whole video. Only the generation
+ * prompt is public — the upstream's title/summary/tags are internal display
+ * copy the API deliberately does not resell. */
+export interface AnalysisVariation {
+  prompt: string;
+}
+
+/**
+ * The only Sonilo result with no media artifact at all: video-analysis
+ * generates nothing and there is nothing to download. The payload is the
+ * work order — `segments` for a time-aligned plan, and one `prompt` per
+ * requested variation, each ready to pass to videoToMusic, videoToSfx,
+ * videoToSound or their video-to-video counterparts.
+ *
+ * Both lists are optional because a `processing` or `failed` poll carries
+ * neither.
+ */
+export interface VideoAnalysisResult extends BaseTaskResult {
+  segments?: AnalysisSegment[];
+  variations?: AnalysisVariation[];
+  duration_seconds?: number;
+}

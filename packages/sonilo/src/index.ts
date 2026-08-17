@@ -16,6 +16,8 @@ export { download } from "./download.js";
 export { VERSION } from "./version.js";
 export type {
   AccountServices,
+  AnalysisSegment,
+  AnalysisVariation,
   AudioChunkEvent,
   AudioDuckingParams,
   BaseTaskResult,
@@ -51,6 +53,8 @@ export type {
   UnknownEvent,
   UsageResponse,
   UsageSummary,
+  VideoAnalysisParams,
+  VideoAnalysisResult,
   VideoInput,
   VideoResult,
   VideoToMusicParams,

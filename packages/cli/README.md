@@ -155,6 +155,9 @@ sonilo text-to-music --duration 60 --async \
 # track.0.wav, track.1.wav, track.2.wav
 sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --variants 3 --output track.wav
 
+# Analyze a video and print a creative brief for scoring it (generates nothing)
+sonilo video-analysis --video clip.mp4 --variants 2
+
 # Generate a sound effect from a text prompt
 sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
 
@@ -227,6 +230,25 @@ The four video-out commands — `video-to-video-sound`, `video-to-video-music`,
 so they take no `--format` and default `--output` to `./output.mp4`. All of
 them are async only: the CLI submits the task, prints its id, and polls until
 it finishes.
+
+### Video analysis
+
+`video-analysis` is the one command that produces no media file. It analyzes a video and
+prints a **creative brief** — a time-aligned `segments` plan plus one ready-to-use generation
+`prompt` per variation:
+
+```bash
+sonilo video-analysis --video clip.mp4 --prompt "focus on the chase" --variants 2
+```
+
+The brief goes to **stdout as JSON** so it can be piped into the next command; `--output
+brief.json` writes it to a file instead. `--variants` is 1-5 (default 1) and is **billed per
+brief**. Source videos may be at most 600 seconds long, and billing has a 10-second floor.
+
+```bash
+sonilo video-analysis --video clip.mp4 --output brief.json
+sonilo video-to-music --video clip.mp4 --prompt "$(jq -r '.variations[0].prompt' brief.json)"
+```
 
 ## Segments
 
@@ -312,7 +334,7 @@ response can only ever carry one track. `video-to-video-music`,
 a free-trial allowance, one summary line on stderr:
 
 ```
-Free trial: text-to-music 1/2 left, video-to-music 0/1 left
+Free trial: text-to-music 1/2 left, video-analysis 2/2 left, video-to-music 0/1 left
 ```
 
 Because the summary goes to stderr, `sonilo account | jq .trial` still sees

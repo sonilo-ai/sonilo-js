@@ -11,6 +11,7 @@ import { VideoToSound } from "./resources/videoToSound.js";
 import { VideoToVideoSound } from "./resources/videoToVideoSound.js";
 import { AudioDucking } from "./resources/audioDucking.js";
 import { Dubbing } from "./resources/dubbing.js";
+import { VideoAnalysis } from "./resources/videoAnalysis.js";
 import { VERSION } from "./version.js";
 
 export interface SoniloClientOptions {
@@ -63,6 +64,7 @@ export class SoniloClient {
   readonly videoToVideoSound: VideoToVideoSound;
   readonly audioDucking: AudioDucking;
   readonly dubbing: Dubbing;
+  readonly videoAnalysis: VideoAnalysis;
 
   constructor(options: SoniloClientOptions = {}) {
     const envKey =
@@ -91,6 +93,7 @@ export class SoniloClient {
     this.videoToVideoSound = new VideoToVideoSound(this);
     this.audioDucking = new AudioDucking(this);
     this.dubbing = new Dubbing(this);
+    this.videoAnalysis = new VideoAnalysis(this);
   }
 
   /**
