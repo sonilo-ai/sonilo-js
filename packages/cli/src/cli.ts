@@ -19,6 +19,8 @@ import {
   type SfxTask,
   type SoundResult,
   type TrialQuota,
+  type VideoAnalysisParams,
+  type VideoAnalysisResult,
   type VideoResult,
   type VideoToVideoSoundParams,
   type WaitOptions,
@@ -48,6 +50,7 @@ Commands:
   video-to-video-sfx            Add sound effects and get the video back
   audio-ducking                 Duck an existing music bed under a voice track
   dubbing                       Dub a video into other languages
+  video-analysis                Analyze a video and print a creative brief
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
                                 (--poll-interval <ms>, --timeout <ms>)
@@ -249,6 +252,23 @@ dubbing options (async-only):
                           printed in the "Submitted task ..." line.
   Max video duration is 180 seconds. You are billed per language.
 
+video-analysis options (async-only):
+  --video <path>          Required (or --video-url). Local file to analyze.
+  --video-url <url>       Required (or --video). Remote video to analyze.
+  --prompt <text>         Optional guidance for the analysis, at most 2000
+                          characters.
+  --variants <n>          How many independent briefs to author for the same
+                          video (1-5). Billed per brief. Default: 1
+  --output <path>         Write the brief to this .json file. Omit it and the
+                          brief is printed to stdout instead — this command
+                          produces no media file, so there is nothing to save
+                          by default.
+  --timeout <ms>          How long to wait for the task. Default: 600000
+  Max video duration is 600 seconds; billing has a 10-second floor. This
+  command GENERATES NOTHING: it returns a time-aligned "segments" plan and one
+  ready-to-use "prompt" per variation, to feed into video-to-music,
+  video-to-sfx, video-to-sound or their video-to-video counterparts.
+
 Global options:
   --api-key <key>   Overrides the SONILO_API_KEY environment variable.
   --help             Show this help and exit.
@@ -268,6 +288,7 @@ Examples:
   sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
   sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
   sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
+  sonilo video-analysis --video clip.mp4 --variants 2
   sonilo tasks get 9f5f2f7e-...
 `;
 
@@ -1256,6 +1277,89 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   }
 }
 
+/** Flatten a finished video-analysis task back into the API's own envelope
+ * shape. Deliberately re-emits the wire format rather than dumping the whole
+ * poll body: this output is meant to be piped into another tool (or read by
+ * an agent), and it should look like what GET /v1/tasks returned, without the
+ * accounting fields that happen to be absent. */
+export function analysisBrief(result: VideoAnalysisResult): Record<string, unknown> {
+  const brief: Record<string, unknown> = {
+    task_id: result.task_id,
+    status: result.status,
+    segments: (result.segments ?? []).map((s) => ({
+      start: s.start,
+      end: s.end,
+      label: s.label,
+      prompt: s.prompt,
+    })),
+    variations: (result.variations ?? []).map((v) => ({ prompt: v.prompt })),
+  };
+  if (result.variants_num !== undefined) brief.variants_num = result.variants_num;
+  if (result.duration_seconds !== undefined) {
+    brief.duration_seconds = result.duration_seconds;
+  }
+  if (result.cost !== undefined) brief.cost = result.cost;
+  return brief;
+}
+
+export function parseVideoAnalysisArgs(argv: string[]): {
+  params: VideoAnalysisParams;
+  output: string | undefined;
+  timeout: number | undefined;
+} {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      prompt: { type: "string" },
+      variants: { type: "string" },
+      output: { type: "string" },
+      timeout: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  return {
+    params: {
+      video: values.video,
+      videoUrl: values["video-url"],
+      prompt: values.prompt,
+      // The 1-5 bound is the backend's to enforce; the CLI only has to make
+      // sure a non-numeric --variants does not reach the wire as "NaN".
+      variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
+    },
+    output: values.output,
+    timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
+  };
+}
+
+/** video-analysis is the one command that produces no media file. The brief
+ * goes to stdout so it can be piped straight into the next command;
+ * --output is the opt-in for keeping a copy on disk. */
+export async function runVideoAnalysis(
+  client: SoniloClient,
+  argv: string[],
+): Promise<void> {
+  const { params, output, timeout } = parseVideoAnalysisArgs(argv);
+  const task = await client.videoAnalysis.submit(params);
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<VideoAnalysisResult>(task.task_id, {
+    ...(timeout !== undefined ? { timeout } : {}),
+  });
+  if ((result.variations ?? []).length === 0) {
+    fail("task succeeded but returned no creative brief");
+  }
+  const brief = JSON.stringify(analysisBrief(result), null, 2);
+  if (output === undefined) {
+    console.log(brief);
+    return;
+  }
+  await writeFile(output, `${brief}\n`);
+  console.log(`Wrote ${output} (${Buffer.byteLength(brief) + 1} bytes)`);
+}
+
 /** Runs `login`/`logout`/`whoami` and turns an expected failure — a plain
  *  `Error` thrown for a rejected sign-in, a 429, an expired code, the
  *  network being down — into the ordinary `sonilo: <message>` / exit 1 path,
@@ -1305,6 +1409,7 @@ async function main(): Promise<void> {
     "video-to-video-sfx",
     "audio-ducking",
     "dubbing",
+    "video-analysis",
     "tasks",
   ]);
   if (!KNOWN_COMMANDS.has(command ?? "")) {
@@ -1360,6 +1465,9 @@ async function main(): Promise<void> {
       return runVideoToVideoSfx(client, commandArgs);
     case "audio-ducking":
       return runAudioDucking(client, commandArgs);
+    case "video-analysis":
+      await runVideoAnalysis(client, commandArgs);
+      break;
     case "dubbing":
       return runDubbing(client, commandArgs);
     case "tasks": {
