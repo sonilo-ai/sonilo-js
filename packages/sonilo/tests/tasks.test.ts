@@ -213,6 +213,81 @@ describe("tasks.wait<MusicTaskResult>", () => {
   });
 });
 
+describe("tasks.wait<MusicTaskResult> stems", () => {
+  it("parses the stems array of a task that separated fully", async () => {
+    const { client } = mockClient(() =>
+      jsonResponse({
+        ...MUSIC_SUCCEEDED,
+        stems: [
+          {
+            stream_index: 0,
+            drums: { url: "https://r2.example.com/drums.m4a", content_type: "audio/mp4", file_size: 11 },
+            bass: { url: "https://r2.example.com/bass.m4a", content_type: "audio/mp4", file_size: 12 },
+            vocals: { url: "https://r2.example.com/vocals.m4a", content_type: "audio/mp4", file_size: 13 },
+            other: { url: "https://r2.example.com/other.m4a", content_type: "audio/mp4", file_size: 14 },
+          },
+        ],
+      }),
+    );
+    const result = await client.tasks.wait<MusicTaskResult>("t1", { pollInterval: 0 });
+    expect(result.stems).toHaveLength(1);
+    const entry = result.stems![0]!;
+    expect(entry.stream_index).toBe(0);
+    expect(entry.drums.url).toBe("https://r2.example.com/drums.m4a");
+    expect(entry.bass.content_type).toBe("audio/mp4");
+    expect(entry.vocals.file_size).toBe(13);
+    expect(entry.other.url).toBe("https://r2.example.com/other.m4a");
+    expect(result.stems_error).toBeUndefined();
+  });
+
+  it("carries stems_error ALONGSIDE a partial stems array — resolvable by stream_index, not position", async () => {
+    // Two audio streams, but only stream 1 separated: the stems array is
+    // shorter than audio, and its single entry is stream 1, not stream 0 —
+    // so stems[0] is NOT audio[0]'s stems. stems_error explains the gap
+    // without voiding what did arrive.
+    const stem = (name: string) => ({
+      url: `https://r2.example.com/s1.${name}.m4a`,
+      content_type: "audio/mp4",
+      file_size: 1,
+    });
+    const { client } = mockClient(() =>
+      jsonResponse({
+        task_id: "t1",
+        type: "video_to_music",
+        status: "succeeded",
+        audio: [
+          { stream_index: 0, url: "https://r2.example.com/v0.m4a" },
+          { stream_index: 1, url: "https://r2.example.com/v1.m4a" },
+        ],
+        stems: [
+          {
+            stream_index: 1,
+            drums: stem("drums"),
+            bass: stem("bass"),
+            vocals: stem("vocals"),
+            other: stem("other"),
+          },
+        ],
+        stems_error: "separation failed for stream 0",
+      }),
+    );
+    const result = await client.tasks.wait<MusicTaskResult>("t1", { pollInterval: 0 });
+    expect(result.status).toBe("succeeded");
+    expect(result.stems_error).toBe("separation failed for stream 0");
+    expect(result.stems).toHaveLength(1);
+    const forStream = (i: number) => result.stems?.find((s) => s.stream_index === i);
+    expect(forStream(0)).toBeUndefined();
+    expect(forStream(1)?.drums.url).toBe("https://r2.example.com/s1.drums.m4a");
+  });
+
+  it("leaves stems and stems_error undefined on a task that never requested them", async () => {
+    const { client } = mockClient(() => jsonResponse(MUSIC_SUCCEEDED));
+    const result = await client.tasks.get<MusicTaskResult>("t1");
+    expect(result.stems).toBeUndefined();
+    expect(result.stems_error).toBeUndefined();
+  });
+});
+
 describe("tasks.get variants_num echo", () => {
   it("is omitted by default (variants_num <= 1)", async () => {
     const { client } = mockClient(() => jsonResponse(MUSIC_SUCCEEDED));

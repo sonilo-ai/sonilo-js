@@ -8,6 +8,7 @@ import type { SoniloClient } from "sonilo";
 import {
   DUBBING_WAIT_TIMEOUT_MS,
   MUSIC_SEGMENTS,
+  STEMS_WAIT_TIMEOUT_MS,
   SFX_SEGMENTS,
   buildClient,
   extFromUrl,
@@ -451,6 +452,128 @@ describe("runTextToMusic --segments", () => {
   });
 });
 
+/** One full stems entry for `stream_index`, each stem URL carrying its own
+ * extension so the written filenames can be asserted end to end. */
+function stemsEntry(streamIndex: number, ext = "wav") {
+  const stem = (name: string) => ({
+    url: `https://cdn.example.com/s${streamIndex}.${name}.${ext}`,
+    content_type: "audio/wav",
+    file_size: 1,
+  });
+  return {
+    stream_index: streamIndex,
+    drums: stem("drums"),
+    bass: stem("bass"),
+    vocals: stem("vocals"),
+    other: stem("other"),
+  };
+}
+
+describe("runTextToMusic --stems", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("forces --async, posts stems, waits with the longer stems timeout, and writes the four stem files", async () => {
+    const { client, calls } = mockClient(() =>
+      json({ task_id: "ts1", status: "processing" }),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "ts1",
+      status: "succeeded",
+      audio: [{ stream_index: 0, url: "https://cdn.example.com/out.wav" }],
+      stems: [stemsEntry(0)],
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    // No --async passed: --stems alone must force it, same as --format wav.
+    await runTextToMusic(client, [
+      "--prompt",
+      "warm pads",
+      "--duration",
+      "30",
+      "--stems",
+      "--output",
+      "track.wav",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("stems")).toBe("true");
+    // Separation can add up to 30 minutes on top of generation, so the wait
+    // must outlast the SDK's generic 10-minute default.
+    expect(waitSpy).toHaveBeenCalledWith("ts1", { timeout: STEMS_WAIT_TIMEOUT_MS });
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "track.wav",
+      "track.drums.wav",
+      "track.bass.wav",
+      "track.vocals.wav",
+      "track.other.wav",
+    ]);
+  });
+
+  it("posts no stems field and no longer timeout without the flag", async () => {
+    const { client, calls } = mockClient(() =>
+      json({ task_id: "ts2", status: "processing" }),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "ts2",
+      status: "succeeded",
+      audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runTextToMusic(client, ["--prompt", "warm pads", "--duration", "30", "--async"]);
+
+    expect((calls[0]!.init.body as FormData).has("stems")).toBe(false);
+    expect(waitSpy).toHaveBeenCalledWith("ts2", {});
+  });
+
+  it("fails when stems were requested but none came back, naming the API's reason", async () => {
+    const { client } = mockClient(() =>
+      json({ task_id: "ts3", status: "processing" }),
+    );
+    vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "ts3",
+      status: "succeeded",
+      audio: [{ stream_index: 0, url: "https://cdn.example.com/out.wav" }],
+      stems_error: "separation service unavailable",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    vi.mocked(writeFile).mockClear();
+
+    await expect(
+      runTextToMusic(client, [
+        "--prompt",
+        "warm pads",
+        "--duration",
+        "30",
+        "--stems",
+        "--output",
+        "track.wav",
+      ]),
+    ).rejects.toThrow("process.exit");
+    expect(console.error).toHaveBeenCalledWith(
+      "sonilo: text-to-music: no stems came back — separation service unavailable",
+    );
+    // The generated track itself is intact and already paid for, so it is on
+    // disk before the exit code reports the missing stems.
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual(["track.wav"]);
+  });
+});
+
 describe("runVideoToMusic --segments", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -588,6 +711,89 @@ describe("runVideoToMusic --prompt-influence", () => {
       "--async",
     ]);
     expect((calls[0]!.init.body as FormData).has("prompt_influence")).toBe(false);
+  });
+});
+
+describe("runVideoToMusic --stems", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("forces --async, posts stems, and writes each variant's stem files matched by stream_index", async () => {
+    const { client, calls } = mockClient(() =>
+      json({ task_id: "vs1", status: "processing" }),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "vs1",
+      status: "succeeded",
+      audio: [
+        { stream_index: 0, url: "https://cdn.example.com/v0.m4a" },
+        { stream_index: 1, url: "https://cdn.example.com/v1.m4a" },
+      ],
+      // Stream 0 did not separate: the stems array is shorter than audio and
+      // its single entry belongs to stream 1 — matching by position would
+      // pin these files on variant 0.
+      stems: [stemsEntry(1, "m4a")],
+      stems_error: "separation failed for stream 0",
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(new Uint8Array([1])),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--variants",
+      "2",
+      "--stems",
+      "--output",
+      "score.m4a",
+    ]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("async");
+    expect(form.get("stems")).toBe("true");
+    expect(waitSpy).toHaveBeenCalledWith("vs1", { timeout: STEMS_WAIT_TIMEOUT_MS });
+    // Variant 0's main track has no stem files; variant 1 carries all four.
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual([
+      "score.0.m4a",
+      "score.1.m4a",
+      "score.1.drums.m4a",
+      "score.1.bass.m4a",
+      "score.1.vocals.m4a",
+      "score.1.other.m4a",
+    ]);
+    // stems_error alongside a partial stems array is a warning, not a
+    // failure: the run still exits 0 with everything that arrived on disk.
+    expect(errorSpy).toHaveBeenCalledWith(
+      "video-to-music: warning: some stems are missing — separation failed for stream 0",
+    );
+  });
+
+  it("omits stems from the submit without the flag", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-to-music")
+        ? json({ task_id: "vs2", status: "processing" })
+        : json({
+            task_id: "vs2",
+            status: "succeeded",
+            audio: [{ stream_index: 0, url: "https://cdn.example.com/out.m4a" }],
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1])));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runVideoToMusic(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--async",
+    ]);
+
+    expect((calls[0]!.init.body as FormData).has("stems")).toBe(false);
   });
 });
 

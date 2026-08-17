@@ -155,6 +155,10 @@ sonilo text-to-music --duration 60 --async \
 # track.0.wav, track.1.wav, track.2.wav
 sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --variants 3 --output track.wav
 
+# Also split the generated track into stems (free, forces --async); writes
+# track.wav plus track.drums.wav, track.bass.wav, track.vocals.wav, track.other.wav
+sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --stems --output track.wav
+
 # Analyze a video and print a creative brief for scoring it (generates nothing)
 sonilo video-analysis --video clip.mp4 --variants 2
 
@@ -199,7 +203,8 @@ Run `sonilo --help` for the full option list, including `--preserve-speech` and
 API default 0.5, lower lets the video lead, free of charge), `--music-prompt` /
 `--sfx-prompt` / `--ducking` / `--stem` for the `video-to-sound` commands,
 `--languages` / `--timeout` for `dubbing`, `--variants` for the five commands
-that take it, and the `--format` options each command accepts. Music commands take `m4a`
+that take it, `--stems` for `text-to-music` and `video-to-music` (see
+[Stems](#stems) below), and the `--format` options each command accepts. Music commands take `m4a`
 (default), `wav` or `mp3` (320 kbps); anything but `m4a` implies `--async`.
 
 `video-to-sound` and `video-to-video-sound` return a combined render plus
@@ -294,8 +299,8 @@ you run it:
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
 
 a non-`m4a` `--format` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
-above 1) submits an async task and polls it instead of streaming the
-response — matching how the underlying
+above 1 / `--stems`) submits an async task and polls it instead of streaming
+the response — matching how the underlying
 [`sonilo`](https://www.npmjs.com/package/sonilo) SDK requires
 `mode: "async"` for those options.
 
@@ -327,6 +332,34 @@ same as a non-`m4a` `--format` and `--preserve-speech` — since the plain strea
 response can only ever carry one track. `video-to-video-music`,
 `video-to-sound` and `video-to-video-sound` are already async-only, so
 `--variants` needs no extra flag there.
+
+## Stems
+
+`--stems` on `text-to-music` and `video-to-music` also splits the generated
+track into four separated stems — `drums`, `bass`, `vocals`, `other`. It is
+**free of charge**. On `video-to-music` it splits the **generated** music,
+never the source video's own audio. It requires the async task API, so it
+forces `--async` the same way a non-`m4a` `--format` does; separation runs
+after generation and typically adds 2-6 minutes to the wait (the backend
+gives up on it after 30, and the CLI waits accordingly).
+
+Each stem is written next to the main output, with the stem name inserted
+before the extension — and per variant when `--variants` is above 1:
+
+```bash
+sonilo text-to-music --prompt "warm lo-fi piano" --duration 30 --stems --output track.wav
+# writes track.wav, track.drums.wav, track.bass.wav, track.vocals.wav, track.other.wav
+
+sonilo video-to-music --video clip.mp4 --stems --variants 2 --output score.m4a
+# writes score.0.m4a and score.1.m4a, each with its own .drums/.bass/.vocals/.other files
+```
+
+Separation is best-effort and can fail wholly or in part without failing the
+generation itself. The CLI always writes the main track(s) plus every stem
+that did come back; when some are missing it prints the API's `stems_error`
+reason as a stderr warning and still exits 0, and only exits non-zero when no
+stems came back at all. The stems normally follow the request's `--format`;
+each file's extension comes from what was actually delivered.
 
 ## Free trial
 

@@ -44,6 +44,7 @@ export type {
   SfxTask,
   SoundOutputEntry,
   SoundResult,
+  StemsEntry,
   StreamEvent,
   TextToMusicParams,
   TextToSfxParams,

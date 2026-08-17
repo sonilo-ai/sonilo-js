@@ -51,18 +51,22 @@ describe("bin entrypoint", () => {
 
   // --isolate-vocals and --preserve-speech are one feature under two names --
   // the backend ORs them onto a single flag (video_to_music router) -- and this
-  // CLI writes only audio[0], exposing no --stem for the vocals/mux entries the
-  // task carries. The help used to describe them as two independent options, one
-  // of which promised "a vocals-only stem" the CLI cannot hand back. Pin the
+  // CLI exposes no way to fetch the vocals/mux entries that feature adds to the
+  // task. The help used to describe them as two independent options, one of
+  // which promised "a vocals-only stem" the CLI cannot hand back. Pin the
   // wording so that cannot come back, and keep it matching the Python CLI's.
-  it("presents --isolate-vocals as a legacy alias, promising no stem", () => {
+  // (--stems is a different, deliverable promise — separated drums/bass/
+  // vocals/other files the CLI does write — so video-to-music's block may
+  // mention it; the pin is on promising a stem from preserve-speech.)
+  it("presents --isolate-vocals as a legacy alias, promising no vocals-only stem", () => {
     const out = execFileSync("node", [BIN, "--help"], { encoding: "utf8" });
 
     const music = optionBlock(out, "video-to-music");
     expect(music).toContain("--preserve-speech");
     expect(music).toContain("--isolate-vocals");
     expect(music).toContain("Legacy alias for --preserve-speech");
-    expect(music).not.toContain("stem");
+    expect(music).not.toContain("vocals-only");
+    expect(music).toContain("--stems");
 
     const videoMusic = optionBlock(out, "video-to-video-music");
     expect(videoMusic).toContain("Legacy alias for --preserve-speech");

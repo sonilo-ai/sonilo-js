@@ -88,6 +88,14 @@ text-to-music options:
                         trial. Above 1, one file is written per variant:
                         --output track.wav --variants 3 writes track.0.wav,
                         track.1.wav, track.2.wav.
+  --stems               Also split the generated track into four stems —
+                        drums, bass, vocals, other. Free of charge. Forces
+                        --async, and typically adds 2-6 min to the wait.
+                        Each stem is written next to the output with its name
+                        inserted before the extension: --output track.wav
+                        --stems also writes track.drums.wav, track.bass.wav,
+                        track.vocals.wav, track.other.wav (per variant when
+                        --variants is above 1).
 
 video-to-music options:
   --video <path>              Required (or --video-url). Local file to score.
@@ -112,6 +120,12 @@ video-to-music options:
                                 lead; higher values follow the prompt more
                                 literally. Free of charge. Works with or
                                 without --async.
+  --stems                       Also split the GENERATED music (never the
+                                video's own audio) into four stems — drums,
+                                bass, vocals, other. Free of charge. Forces
+                                --async, and typically adds 2-6 min to the
+                                wait. Files are named as under text-to-music
+                                --stems above.
 
 text-to-sfx options:
   --prompt <text>        Required. What the sound effect should be.
@@ -654,22 +668,87 @@ export async function runTasksWait(
   printJson(await client.tasks.wait(taskId, opts));
 }
 
+/** Default wait timeout when `--stems` is set, in milliseconds.
+ *
+ * Stem separation runs after generation and gives itself up to 30 minutes
+ * before giving up server-side, on top of the generation the SDK's generic
+ * default (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is sized for. Keeping the
+ * generic default would make the CLI throw `TaskTimeoutError` on healthy
+ * stems runs, so `--stems` waits 40 minutes: the generic 10 plus the
+ * backend's own 30-minute separation ceiling. Mirrors how `dubbing` raises
+ * its wait to that backend's ceiling (`DUBBING_WAIT_TIMEOUT_MS`). */
+export const STEMS_WAIT_TIMEOUT_MS = 2_400_000;
+
+/** The four stems every successful separation carries, in the order the
+ * files are written. Matches `StemsEntry` in packages/sonilo/src/types.ts. */
+export const MUSIC_STEM_NAMES = ["drums", "bass", "vocals", "other"] as const;
+
+/** Write the four stem files for one written track, named via
+ * `stemOutputPath` off that track's own output path (`track.wav` →
+ * `track.drums.wav`, …, and `track.1.wav` → `track.1.drums.wav` per variant).
+ * The stems entry is looked up by `stream_index`, never by array position:
+ * `stems` carries only the streams that separated successfully, so it can be
+ * shorter than `audio`. A track with no entry is skipped here — whether that
+ * is worth a warning or an exit code is `reportStemsOutcome`'s call, made
+ * once, after every available file is on disk. */
+async function writeTrackStems(
+  result: MusicTaskResult,
+  track: MusicMediaEntry,
+  trackOutput: string,
+): Promise<void> {
+  const entry = (result.stems ?? []).find((s) => s.stream_index === track.stream_index);
+  if (!entry) return;
+  for (const name of MUSIC_STEM_NAMES) {
+    const media = entry[name];
+    await writeAudio(await download(media), stemOutputPath(trackOutput, name, media.url));
+  }
+}
+
+/** Report how `--stems` fared, after the main output and every stem that did
+ * arrive have been written. Separation is free and best-effort, and
+ * `stems_error` can appear ALONGSIDE a partial `stems` array, so its presence
+ * never means "no stems": with a partial result it is surfaced as a stderr
+ * warning and the run still exits 0 — the generation itself succeeded and the
+ * arrived stems are on disk. Only a result carrying no stems at all fails,
+ * since then nothing of what `--stems` asked for exists to write. */
+function reportStemsOutcome(command: string, result: MusicTaskResult): void {
+  const error = result.stems_error;
+  if ((result.stems ?? []).length === 0) {
+    fail(`${command}: no stems came back${error !== undefined ? ` — ${error}` : ""}`);
+  }
+  if (error !== undefined) {
+    console.error(`${command}: warning: some stems are missing — ${error}`);
+  }
+}
+
 /** Write every entry of an async music result's `audio[]`. At the default
  * `--variants` of 1 (the overwhelming common case) `tracks` has exactly one
  * entry, and this writes it at the literal `mainOutput` path — exactly what
  * both callers did before variants existed. Above 1 it writes one file per
  * variant, indexed via `variantOutputPath`, so a multi-variant run never
- * silently discards all but the first result. */
-async function writeMusicTracks(tracks: MusicMediaEntry[], mainOutput: string): Promise<void> {
+ * silently discards all but the first result. With `stems` requested, each
+ * track's separated stem files follow it, and the stems outcome (partial or
+ * empty — see `reportStemsOutcome`) is reported once at the end. */
+async function writeMusicTracks(
+  command: string,
+  result: MusicTaskResult,
+  mainOutput: string,
+  stemsRequested: boolean,
+): Promise<void> {
+  const tracks = result.audio ?? [];
   if (tracks.length <= 1) {
     const track = tracks[0];
     if (!track) fail("task succeeded but returned no audio");
     await writeAudio(await download(track), mainOutput);
-    return;
+    if (stemsRequested) await writeTrackStems(result, track, mainOutput);
+  } else {
+    for (const [index, track] of tracks.entries()) {
+      const trackOutput = variantOutputPath(mainOutput, index);
+      await writeAudio(await download(track), trackOutput);
+      if (stemsRequested) await writeTrackStems(result, track, trackOutput);
+    }
   }
-  for (const [index, track] of tracks.entries()) {
-    await writeAudio(await download(track), variantOutputPath(mainOutput, index));
-  }
+  if (stemsRequested) reportStemsOutcome(command, result);
 }
 
 export async function runTextToMusic(client: SoniloClient, argv: string[]): Promise<void> {
@@ -683,17 +762,21 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
       async: { type: "boolean" },
       segments: { type: "string" },
       variants: { type: "string" },
+      stems: { type: "boolean" },
     },
   });
   const prompt = requireFlag(values.prompt, "prompt");
   const duration = Number(requireFlag(values.duration, "duration"));
   const format = parseFormat(values.format, ["m4a", "wav", "mp3"] as const, "m4a");
   const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
+  // Sent only when the user opted in, so the server's default-off stands
+  // untouched on every existing invocation.
+  const stems = values.stems === true ? true : undefined;
   // variantsNum > 1 requires the async task API, as does any non-m4a
   // container -- wav and mp3 are both finalize-time transcodes, and m4a is
-  // the only format the stream itself carries.
+  // the only format the stream itself carries -- and so does --stems.
   const useAsync =
-    values.async === true || format !== "m4a" || (variantsNum ?? 1) > 1;
+    values.async === true || format !== "m4a" || (variantsNum ?? 1) > 1 || stems === true;
   const segments = (await readSegments("text-to-music", values.segments, MUSIC_SEGMENTS)) as
     | Segment[]
     | undefined;
@@ -710,10 +793,21 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
     outputFormat: format,
     segments,
     variantsNum,
+    stems,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
-  const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
-  await writeMusicTracks(result.audio ?? [], outputPath(values.output, format));
+  // Separation runs after generation and can add up to 30 minutes, so a
+  // stems run waits longer than the SDK's 10-minute default would allow.
+  const result = await client.tasks.wait<MusicTaskResult>(
+    task.task_id,
+    stems === true ? { timeout: STEMS_WAIT_TIMEOUT_MS } : {},
+  );
+  await writeMusicTracks(
+    "text-to-music",
+    result,
+    outputPath(values.output, format),
+    stems === true,
+  );
 }
 
 export async function runVideoToMusic(client: SoniloClient, argv: string[]): Promise<void> {
@@ -731,6 +825,7 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
       segments: { type: "string" },
       variants: { type: "string" },
       "prompt-influence": { type: "string" },
+      stems: { type: "boolean" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
@@ -753,13 +848,18 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
   // both the stream and async paths — it never forces --async.
   const promptInfluence =
     values["prompt-influence"] !== undefined ? Number(values["prompt-influence"]) : undefined;
+  // Sent only when the user opted in, so the server's default-off stands
+  // untouched on every existing invocation. Splits the GENERATED music,
+  // never the source video's own audio.
+  const stems = values.stems === true ? true : undefined;
   // variantsNum > 1 requires the async task API, same as the other async-only options.
   const useAsync =
     values.async === true ||
     format !== "m4a" ||
     isolateVocals ||
     preserveSpeech ||
-    (variantsNum ?? 1) > 1;
+    (variantsNum ?? 1) > 1 ||
+    stems === true;
   const segments = (await readSegments("video-to-music", values.segments, MUSIC_SEGMENTS)) as
     | Segment[]
     | undefined;
@@ -786,10 +886,21 @@ export async function runVideoToMusic(client: SoniloClient, argv: string[]): Pro
     segments,
     variantsNum,
     promptInfluence,
+    stems,
   });
   console.error(`Submitted task ${task.task_id}, waiting...`);
-  const result = await client.tasks.wait<MusicTaskResult>(task.task_id);
-  await writeMusicTracks(result.audio ?? [], outputPath(values.output, format));
+  // Separation runs after generation and can add up to 30 minutes, so a
+  // stems run waits longer than the SDK's 10-minute default would allow.
+  const result = await client.tasks.wait<MusicTaskResult>(
+    task.task_id,
+    stems === true ? { timeout: STEMS_WAIT_TIMEOUT_MS } : {},
+  );
+  await writeMusicTracks(
+    "video-to-music",
+    result,
+    outputPath(values.output, format),
+    stems === true,
+  );
 }
 
 export async function runTextToSfx(client: SoniloClient, argv: string[]): Promise<void> {
