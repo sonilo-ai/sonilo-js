@@ -264,7 +264,7 @@ dubbing options (async-only):
                           running — resume waiting on it with
                           "sonilo tasks wait <task-id>" using the task id
                           printed in the "Submitted task ..." line.
-  Max video duration is 180 seconds. You are billed per language.
+  Max video duration is 300 seconds. You are billed per language.
 
 video-analysis options (async-only):
   --video <path>          Required (or --video-url). Local file to analyze.
@@ -1321,7 +1321,7 @@ export function languageOutputPath(template: string, language: string): string {
  * The dubbing backend polls its own pipeline for up to 7200000 ms (2 hours)
  * before giving up server-side. The SDK's generic default
  * (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is far too short for this endpoint:
- * a 180-second video dubbed into several languages routinely takes longer
+ * a 300-second video dubbed into several languages routinely takes longer
  * than 10 minutes, so using the generic default would make the CLI throw
  * `TaskTimeoutError` and exit non-zero on runs that are still succeeding
  * server-side. Matching the backend's own 2-hour ceiling means the CLI gives
