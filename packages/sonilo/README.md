@@ -376,7 +376,7 @@ boolean (default off, free) ducks the background music/effects bed under the
 dubbed voice while it speaks; when off the bed is kept at a constant level.
 Every endpoint's `ducking` is default-off, so this one is no exception.
 
-Dubbing is async-only, and the source video may be at most 180 seconds long.
+Dubbing is async-only, and the source video may be at most 300 seconds long.
 You are billed per language. Dubbing has **no free trial allowance** — unlike
 every other endpoint, every call bills from the first one (see
 [Free trial](#free-trial)).
