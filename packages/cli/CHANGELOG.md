@@ -1,5 +1,13 @@
 # sonilo-cli
 
+## 0.15.1
+
+### Patch Changes
+
+- a9750db: Document dubbing's raised source-video cap: 300 seconds (5 min), up from 180. The limit is enforced by the API, so nothing in these packages gated on it — but the README and the CLI's `--help` both stated the old number, and a caller who believes it trims a video that would have been accepted.
+- Updated dependencies [a9750db]
+  - sonilo@0.16.1
+
 ## 0.15.0
 
 ### Minor Changes
