@@ -248,7 +248,7 @@ sonilo video-analysis --video clip.mp4 --prompt "focus on the chase" --variants 
 
 The brief goes to **stdout as JSON** so it can be piped into the next command; `--output
 brief.json` writes it to a file instead. `--variants` is 1-5 (default 1) and is **billed per
-brief**. Source videos may be at most 600 seconds long, and billing has a 10-second floor.
+brief**. Source videos may be at most 360 seconds long, and billing has a 10-second floor.
 
 ```bash
 sonilo video-analysis --video clip.mp4 --output brief.json

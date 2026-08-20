@@ -32,7 +32,7 @@
     "client.dubbing dubs one video into several languages in a single async call. languages is an array of codes (en, zh_cn, ja, ko, pt, es, de, fr, it, ru); omit it for the default [\"zh_cn\", \"es\", \"fr\"]. You are billed per language, with no free trial runs.",
     "A DubbingResult has no audio/video/output_url. Its results live in result.outputs, a map of language code to dubbed .mp4 URL. dubbing's videoUrl must be https \u2014 plain http is rejected by the pipeline, not just discouraged.",
     "client.videoAnalysis returns a creative BRIEF, not media: the method is analyze() (not generate()) and VideoAnalysisResult has no download helper. Read result.segments (start/end/label/prompt) and result.variations[i].prompt.",
-    "Pass a videoAnalysis variation's prompt straight to videoToMusic / videoToSfx / videoToSound as their prompt. It takes one of video/videoUrl plus optional prompt and variantsNum (1-5, billed per brief); max 600s of video, 10s billing floor.",
+    "Pass a videoAnalysis variation's prompt straight to videoToMusic / videoToSfx / videoToSound as their prompt. It takes one of video/videoUrl plus optional prompt and variantsNum (1-5, billed per brief); max 360s of video, 10s billing floor.",
     "VideoAnalysisResult.segments and .variations are both OPTIONAL: a processing or failed poll carries neither. Guard with ?? [] before iterating rather than asserting them."
   ]
 }

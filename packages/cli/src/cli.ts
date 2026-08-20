@@ -278,7 +278,7 @@ video-analysis options (async-only):
                           produces no media file, so there is nothing to save
                           by default.
   --timeout <ms>          How long to wait for the task. Default: 600000
-  Max video duration is 600 seconds; billing has a 10-second floor. This
+  Max video duration is 360 seconds; billing has a 10-second floor. This
   command GENERATES NOTHING: it returns a time-aligned "segments" plan and one
   ready-to-use "prompt" per variation, to feed into video-to-music,
   video-to-sfx, video-to-sound or their video-to-video counterparts.
