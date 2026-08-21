@@ -396,7 +396,7 @@ counterparts.
 
 Pass exactly one of `video` / `videoUrl`, plus optional `prompt` (guidance
 for the analysis, at most 2000 characters) and `variantsNum` (1-5, default
-1 — billed per brief). Source videos may be at most 600 seconds long, and
+1 — billed per brief). Source videos may be at most 360 seconds long, and
 billing has a 10-second floor, so a very short clip still costs the same as a
 10-second one.
 
