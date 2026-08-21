@@ -607,11 +607,16 @@ export type DubbingLanguage =
   | "ja"
   | "ko"
   | "pt"
+  /** Brazilian Portuguese. `pt` alone is unqualified Portuguese. */
+  | "pt_br"
   | "es"
+  /** Latin American Spanish. `es` alone is unqualified Spanish. */
+  | "es_419"
   | "de"
   | "fr"
   | "it"
   | "ru"
+  | "th"
   | (string & {});
 
 export interface DubbingParams {
