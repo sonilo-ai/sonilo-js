@@ -617,6 +617,11 @@ export type DubbingLanguage =
   | "it"
   | "ru"
   | "th"
+  /** Unqualified Arabic, not one of the country dialects. */
+  | "ar"
+  | "tr"
+  | "vi"
+  | "id"
   | (string & {});
 
 export interface DubbingParams {
