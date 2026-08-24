@@ -371,9 +371,10 @@ const result = await client.dubbing.generate(
 Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
 the dubbing pipeline fetches the source itself and rejects plain http). The
 optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
-codes are `en, zh_cn, ja, ko, pt, pt_br, es, es_419, de, fr, it, ru, th`
-(`pt_br` is Brazilian Portuguese and `es_419` Latin American Spanish; plain
-`pt` and `es` stay unqualified). The optional `ducking`
+codes are `en, zh_cn, ja, ko, pt, pt_br, es, es_419, de, fr, it, ru, th,
+ar, tr, vi, id` (`pt_br` is Brazilian Portuguese and `es_419` Latin American
+Spanish; plain `pt` and `es` stay unqualified, as does `ar`). The optional
+`ducking`
 boolean (default off, free) ducks the background music/effects bed under the
 dubbed voice while it speaks; when off the bed is kept at a constant level.
 Every endpoint's `ducking` is default-off, so this one is no exception.
