@@ -38,6 +38,11 @@ export async function buildDubbingForm(params: DubbingParams): Promise<FormData>
   if (params.ducking !== undefined) {
     form.set("ducking", String(params.ducking));
   }
+  // Omitted when unset rather than defaulted here, so the server owns the
+  // default (on) and this SDK does not have to be republished if it moves.
+  if (params.lipsync !== undefined) {
+    form.set("lipsync", String(params.lipsync));
+  }
   return form;
 }
 

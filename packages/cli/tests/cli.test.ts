@@ -1689,6 +1689,16 @@ describe("parseDubbingArgs", () => {
     const { timeout } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
     expect(timeout).toBeUndefined();
   });
+
+  it("turns --no-lipsync into an explicit false", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--no-lipsync"]);
+    expect(params.lipsync).toBe(false);
+  });
+
+  it("leaves lipsync undefined when the flag is absent, so the server default (on) applies", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.lipsync).toBeUndefined();
+  });
 });
 
 describe("runDubbing", () => {

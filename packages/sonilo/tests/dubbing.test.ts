@@ -60,6 +60,27 @@ describe("dubbing", () => {
     expect(form.get("ducking")).toBe("false");
   });
 
+  it("omits lipsync when unset so the server default (on) applies", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("lipsync")).toBe(false);
+  });
+
+  it("sends lipsync=false when the caller turns it off", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4", lipsync: false });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("lipsync")).toBe("false");
+  });
+
+  it("sends an explicit lipsync=true through unchanged", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({ videoUrl: "https://x/v.mp4", lipsync: true });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("lipsync")).toBe("true");
+  });
+
   it("uploads a File as the video part", async () => {
     const { fetch, client } = ackClient();
     await client.dubbing.submit({ video: new File(["bytes"], "clip.mp4") });
