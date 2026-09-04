@@ -155,13 +155,30 @@ function tmpFile(): string {
   return join(mkdtempSync(join(tmpdir(), "sonilo-login-")), "credentials.json");
 }
 
+/** A credential expiry far enough out that it cannot lapse into the past
+ *  while the suite still uses it.
+ *
+ *  It used to be the literal "2026-09-01T00:00:00Z". `runLogin` treats a
+ *  stored credential as not-signed-in once `Date.parse(expires_at) <=
+ *  Date.now()`, so on 2026-09-01 this fixture silently flipped from "valid"
+ *  to "expired": the "refuses to re-authenticate" test below started getting
+ *  a full fresh login instead of the guard message, and main went red for
+ *  every PR until someone noticed the date rather than the diff. Derived from
+ *  `Date.now()` so it moves with the clock instead of waiting to expire.
+ *
+ *  The expired-credential cases pass an explicit past `expires_at` override,
+ *  so they are unaffected by this and stay deterministic. */
+const VALID_EXPIRY = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+/** The same instant as `expiryDate()` in src/login.ts renders it. */
+const VALID_EXPIRY_DAY = VALID_EXPIRY.slice(0, 10);
+
 function sample(overrides: Partial<StoredCredential> = {}): StoredCredential {
   return {
     api_key: "sk-old",
     key_id: "key-0",
     account_id: "acct-0",
     account_name: "Acme",
-    expires_at: "2026-09-01T00:00:00Z",
+    expires_at: VALID_EXPIRY,
     created_at: "2026-08-01T00:00:00Z",
     created_by: "sonilo-cli/0.10.0",
     ...overrides,
@@ -242,7 +259,7 @@ describe("runLogin", () => {
     await runLogin([], d, path);
 
     expect(logs).toEqual([
-      `Already signed in as Acme (cli: ${hostname()}, expires 2026-09-01). Re-authenticate with --force.`,
+      `Already signed in as Acme (cli: ${hostname()}, expires ${VALID_EXPIRY_DAY}). Re-authenticate with --force.`,
     ]);
     expect(calls).toEqual([]);
     expect(readCredential(BASE, path)?.api_key).toBe("sk-old");
@@ -467,7 +484,7 @@ describe("runWhoami", () => {
     expect(out).toContain("Acme");
     expect(out).toContain("sk-abcde"); // api_key.slice(0, 8)
     expect(out).not.toContain("sk-abcdefghijklmnop"); // never the whole key
-    expect(out).toContain("2026-09-01");
+    expect(out).toContain(VALID_EXPIRY_DAY);
     expect(out).toContain("source: credential file");
   });
 
