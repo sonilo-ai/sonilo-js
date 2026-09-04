@@ -290,7 +290,7 @@ stems keep their native formats. `videoToVideoSound` does not take it: that
 endpoint always muxes the mix into an mp4, and its params type
 (`VideoToVideoSoundParams`) omits the field so passing it is a compile
 error.
-Input videos may be at most 180 seconds long.
+Input videos may be at most 480 seconds (8 minutes) long.
 
 Use `submit()` instead of `generate()` to get a `task_id` back immediately and
 poll it yourself with `client.tasks.wait<SoundResult>(taskId)`.
