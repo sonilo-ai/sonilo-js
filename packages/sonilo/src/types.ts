@@ -640,6 +640,20 @@ export interface DubbingParams {
    * always kept, at a constant level unless this is `true`. Free.
    */
   ducking?: boolean;
+  /**
+   * Whether the speaker's mouth is re-rendered to match the dubbed speech.
+   * Default ON server-side — the behaviour every dubbing task had before this
+   * parameter existed.
+   *
+   * `false` leaves the picture completely untouched: the video comes back at
+   * its original resolution and frame rate rather than re-rendered, and only
+   * the audio is replaced — so the mouths keep moving to the original
+   * language. Worth it for footage with no on-camera speaker, or when
+   * preserving the exact original picture matters more than matching lip
+   * movement. The background bed is rebuilt either way, so `ducking` is
+   * unaffected.
+   */
+  lipsync?: boolean;
 }
 
 export interface DubbingResult extends BaseTaskResult {

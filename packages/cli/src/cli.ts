@@ -258,6 +258,15 @@ dubbing options (async-only):
   --ducking               Duck the background music/effects bed under the
                           dubbed voice. Off by default: the bed is kept at a
                           constant level. Free.
+  --no-lipsync            Leave the picture completely untouched. By default
+                          the speaker's mouth is re-rendered to match the
+                          dubbed speech; with this the video comes back at its
+                          original resolution and frame rate and only the
+                          audio is replaced, so the mouths keep moving to the
+                          original language. Use it for footage with no
+                          on-camera speaker, or when preserving the exact
+                          original picture matters more than matching lip
+                          movement.
   --output <path>         Filename template. One file is written per language,
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
@@ -1344,6 +1353,7 @@ export function parseDubbingArgs(argv: string[]): {
       "video-url": { type: "string" },
       languages: { type: "string" },
       ducking: { type: "boolean" },
+      "no-lipsync": { type: "boolean" },
       output: { type: "string" },
       timeout: { type: "string" },
     },
@@ -1369,6 +1379,10 @@ export function parseDubbingArgs(argv: string[]): {
       // Default-OFF server-side (unlike v2m's --no-ducking): only sent when
       // the user explicitly opts in with --ducking.
       ducking: values.ducking === true ? true : undefined,
+      // The mirror image: lipsync is default-ON server-side, so the only
+      // direction worth a flag is turning it off. Left undefined otherwise so
+      // the server keeps owning the default.
+      lipsync: values["no-lipsync"] === true ? false : undefined,
     },
     output: values.output,
     timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,

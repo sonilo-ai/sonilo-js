@@ -285,7 +285,7 @@ If a command is given segments shaped for the other kind (e.g. SFX-shaped
 immediately and names the shape it expected, since that mismatch is a common
 copy-paste mistake.
 
-`dubbing` differs from the other commands in three ways worth knowing before
+`dubbing` differs from the other commands in four ways worth knowing before
 you run it:
 
 - `--output` is a filename **template**, not a single destination: a dubbing
@@ -297,6 +297,12 @@ you run it:
 - `--timeout` defaults to 7200000 ms (2 hours), matching the backend's own
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
+- `--no-lipsync` leaves the picture completely untouched. By default the
+  speaker's mouth is re-rendered to match the dubbed speech; with this flag
+  the video comes back at its original resolution and frame rate and only the
+  audio is replaced, so the mouths keep moving to the original language. Use
+  it for footage with no on-camera speaker, or when preserving the exact
+  original picture matters more than matching lip movement.
 
 a non-`m4a` `--format` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
 above 1 / `--stems`) submits an async task and polls it instead of streaming
