@@ -1,6 +1,6 @@
 ---
 "sonilo": minor
-"@sonilo/cli": minor
+"sonilo-cli": minor
 ---
 
 Dubbing: add `lipsync`, defaulting to on.
