@@ -258,10 +258,15 @@ dubbing options (async-only):
   --ducking               Duck the background music/effects bed under the
                           dubbed voice. Off by default: the bed is kept at a
                           constant level. Free.
-  --no-lipsync            Skip the mouth re-render. On by default; with this
-                          the deliverable keeps your source's own frames,
-                          resolution and frame rate and only the audio is
-                          replaced.
+  --no-lipsync            Leave the picture completely untouched. By default
+                          the speaker's mouth is re-rendered to match the
+                          dubbed speech; with this the video comes back at its
+                          original resolution and frame rate and only the
+                          audio is replaced, so the mouths keep moving to the
+                          original language. Use it for footage with no
+                          on-camera speaker, or when preserving the exact
+                          original picture matters more than matching lip
+                          movement.
   --subtitle <lang>=<src> Target-language script for one language: the lines
                           you want spoken, not a source transcript. Repeat it
                           once per language, and give every language in
@@ -271,8 +276,10 @@ dubbing options (async-only):
   --export-srt            Also return a re-timed .srt per language, aligned
                           against the delivered audio and keeping your lines
                           verbatim. Requires --subtitle. Each file is written
-                          beside its video (clip.es.mp4 -> clip.es.srt), and
-                          one status line per language is printed.
+                          beside its video (clip.es.mp4 -> clip.es.srt), so
+                          --output may not end in .srt. Two status lines per
+                          language are printed: what the pipeline made of your
+                          script, and how the export came out.
   --output <path>         Filename template. One file is written per language,
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
@@ -1480,9 +1487,9 @@ export function parseDubbingArgs(argv: string[]): {
       // Default-OFF server-side (unlike v2m's --no-ducking): only sent when
       // the user explicitly opts in with --ducking.
       ducking: values.ducking === true ? true : undefined,
-      // lipsync is the mirror image: default-ON server-side, so the only
-      // thing worth expressing is turning it off, and an absent field must
-      // keep meaning "on".
+      // The mirror image: lipsync is default-ON server-side, so the only
+      // direction worth a flag is turning it off. Left undefined otherwise so
+      // the server keeps owning the default.
       lipsync: values["no-lipsync"] === true ? false : undefined,
       subtitles: parseSubtitles(values.subtitle),
       exportSrt: values["export-srt"] === true ? true : undefined,

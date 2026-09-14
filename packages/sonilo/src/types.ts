@@ -704,11 +704,17 @@ export interface DubbingParams {
    */
   ducking?: boolean;
   /**
-   * Re-render the speaker's mouth to match the dubbed audio. Default ON
-   * server-side — that is what every dubbing task did before the parameter
-   * existed — so it is sent only when you pass it. `false` keeps your
-   * source's own frames, resolution and frame rate and replaces the audio
-   * alone.
+   * Whether the speaker's mouth is re-rendered to match the dubbed speech.
+   * Default ON server-side — the behaviour every dubbing task had before this
+   * parameter existed.
+   *
+   * `false` leaves the picture completely untouched: the video comes back at
+   * its original resolution and frame rate rather than re-rendered, and only
+   * the audio is replaced — so the mouths keep moving to the original
+   * language. Worth it for footage with no on-camera speaker, or when
+   * preserving the exact original picture matters more than matching lip
+   * movement. The background bed is rebuilt either way, so `ducking` is
+   * unaffected.
    */
   lipsync?: boolean;
   /**

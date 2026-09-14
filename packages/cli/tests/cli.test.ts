@@ -1740,11 +1740,14 @@ describe("parseDubbingArgs", () => {
     expect(output).toBe("clip.srt");
   });
 
-  it("sends lipsync=false only for --no-lipsync, since the server default is on", () => {
-    const off = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--no-lipsync"]);
-    expect(off.params.lipsync).toBe(false);
-    const plain = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
-    expect(plain.params.lipsync).toBeUndefined();
+  it("turns --no-lipsync into an explicit false", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--no-lipsync"]);
+    expect(params.lipsync).toBe(false);
+  });
+
+  it("leaves lipsync undefined when the flag is absent, so the server default (on) applies", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.lipsync).toBeUndefined();
   });
 });
 

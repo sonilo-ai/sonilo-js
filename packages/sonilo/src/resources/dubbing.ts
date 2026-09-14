@@ -54,10 +54,8 @@ async function toSubtitleBlob(
  * A bare or repeated `subtitles` key is refused server-side rather than
  * silently ignored, so each entry gets its own `subtitles[<language>]` field.
  *
- * `ducking`, `lipsync` and `export_srt` are each sent only when the caller
- * passed them. That matters most for `lipsync`, whose server default is ON:
- * an absent field must keep meaning "re-render the mouth", which is what
- * every dubbing task did before the parameter existed. */
+ * `export_srt` is sent only when the caller passed it, like every other
+ * optional field here, so the server keeps owning its default. */
 export async function buildDubbingForm(params: DubbingParams): Promise<FormData> {
   if ((params.video === undefined) === (params.videoUrl === undefined)) {
     throw new SoniloError("Provide exactly one of video or videoUrl");
@@ -81,6 +79,8 @@ export async function buildDubbingForm(params: DubbingParams): Promise<FormData>
   if (params.ducking !== undefined) {
     form.set("ducking", String(params.ducking));
   }
+  // Omitted when unset rather than defaulted here, so the server owns the
+  // default (on) and this SDK does not have to be republished if it moves.
   if (params.lipsync !== undefined) {
     form.set("lipsync", String(params.lipsync));
   }
