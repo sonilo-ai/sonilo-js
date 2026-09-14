@@ -18,6 +18,7 @@ import {
   outputPath,
   parseDubbingArgs,
   parseFormat,
+  parseSubtitles,
   readSegments,
   runAccount,
   runAuthCommand,
@@ -33,6 +34,9 @@ import {
   runVideoToVideoSfx,
   runVideoToVideoSound,
   stemOutputPath,
+  subtitleExportLines,
+  subtitleOutputPath,
+  subtitlePreflightLines,
   variantOutputPath,
 } from "../src/cli.js";
 import { writeCredential, type StoredCredential } from "../src/credentials.js";
@@ -1690,6 +1694,52 @@ describe("parseDubbingArgs", () => {
     expect(timeout).toBeUndefined();
   });
 
+  it("collects repeated --subtitle flags into one map", () => {
+    const { params } = parseDubbingArgs([
+      "--video-url",
+      "https://x/v.mp4",
+      "--languages",
+      "ja,es",
+      "--subtitle",
+      "ja=scripts/ja.srt",
+      "--subtitle",
+      "es=https://x/es.vtt",
+      "--export-srt",
+    ]);
+    expect(params.subtitles).toEqual({ ja: "scripts/ja.srt", es: "https://x/es.vtt" });
+    expect(params.exportSrt).toBe(true);
+  });
+
+  it("leaves subtitles and exportSrt undefined when the flags are absent", () => {
+    const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.subtitles).toBeUndefined();
+    expect(params.exportSrt).toBeUndefined();
+  });
+
+  it("refuses an --output ending in .srt with --export-srt, which would overwrite the video", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() =>
+      parseDubbingArgs([
+        "--video-url",
+        "https://x/v.mp4",
+        "--subtitle",
+        "es=es.srt",
+        "--export-srt",
+        "--output",
+        "clip.SRT",
+      ]),
+    ).toThrow("process.exit");
+    vi.restoreAllMocks();
+  });
+
+  it("allows an --output ending in .srt when no SRT is being exported", () => {
+    const { output } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--output", "clip.srt"]);
+    expect(output).toBe("clip.srt");
+  });
+
   it("turns --no-lipsync into an explicit false", () => {
     const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--no-lipsync"]);
     expect(params.lipsync).toBe(false);
@@ -1698,6 +1748,99 @@ describe("parseDubbingArgs", () => {
   it("leaves lipsync undefined when the flag is absent, so the server default (on) applies", () => {
     const { params } = parseDubbingArgs(["--video-url", "https://x/v.mp4"]);
     expect(params.lipsync).toBeUndefined();
+  });
+});
+
+describe("parseSubtitles", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns undefined when the flag was never passed", () => {
+    expect(parseSubtitles(undefined)).toBeUndefined();
+  });
+
+  it("splits on the first = so a signed URL keeps its query string", () => {
+    expect(parseSubtitles(["es=https://x/es.vtt?sig=abc=def"])).toEqual({
+      es: "https://x/es.vtt?sig=abc=def",
+    });
+  });
+
+  it("exits on a value with no = at all", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() => parseSubtitles(["ja.srt"])).toThrow("process.exit");
+  });
+
+  it("exits when the same language is given twice", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() => parseSubtitles(["ja=a.srt", "ja=b.srt"])).toThrow("process.exit");
+  });
+});
+
+describe("subtitleOutputPath", () => {
+  it("puts the .srt beside its video", () => {
+    expect(subtitleOutputPath("out/clip.es.mp4")).toBe("out/clip.es.srt");
+  });
+
+  it("appends .srt when the video path has no extension", () => {
+    expect(subtitleOutputPath("v1.2/clip")).toBe("v1.2/clip.srt");
+  });
+});
+
+describe("subtitleExportLines", () => {
+  it("tolerates an alignment loss sent as a string or as a number", () => {
+    expect(
+      subtitleExportLines({
+        task_id: "db1",
+        status: "succeeded",
+        subtitle_export: {
+          ja: { status: "exported", alignment_loss: "0.365" },
+          es: { status: "exported", alignment_loss: 0.21 },
+        },
+      }),
+    ).toEqual(["es: subtitles exported, alignment loss 0.21", "ja: subtitles exported, alignment loss 0.365"]);
+  });
+
+  it("reports a blocked export, which still delivered its video", () => {
+    expect(
+      subtitleExportLines({
+        task_id: "db1",
+        status: "succeeded",
+        subtitle_export: { ja: { status: "blocked", error: "cue drift too large" } },
+      }),
+    ).toEqual(["ja: subtitles blocked — cue drift too large"]);
+  });
+
+  it("is empty when no scripts were sent", () => {
+    expect(subtitleExportLines({ task_id: "db1", status: "succeeded" })).toEqual([]);
+  });
+});
+
+describe("subtitlePreflightLines", () => {
+  it("names the status and how many of the caller's lines were changed", () => {
+    expect(
+      subtitlePreflightLines({
+        task_id: "db1",
+        status: "succeeded",
+        subtitle_preflight: {
+          ja: { status: "review_required", cue_count: "5", changes_count: "2" },
+          es: { status: "ok", changes_count: 0 },
+        },
+      }),
+    ).toEqual([
+      "es: script ok, 0 change(s) to your lines",
+      "ja: script review_required, 2 change(s) to your lines",
+    ]);
+  });
+
+  it("is empty when no scripts were sent", () => {
+    expect(subtitlePreflightLines({ task_id: "db1", status: "succeeded" })).toEqual([]);
   });
 });
 
@@ -1809,6 +1952,65 @@ describe("runDubbing", () => {
     ]);
 
     expect(waitSpy).toHaveBeenCalledWith("db3", { timeout: 5000 });
+  });
+
+  it("writes an .srt beside each video and reports every export status", async () => {
+    // `fr` is exported, `es` was blocked: the blocked language still gets its
+    // dubbed video, is simply absent from `subtitles`, and must still be
+    // accounted for in the printed summary.
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing")
+        ? json({ task_id: "db4", status: "processing" })
+        : json({
+            task_id: "db4",
+            status: "succeeded",
+            outputs: {
+              es: "https://cdn.example.com/es.mp4",
+              fr: "https://cdn.example.com/fr.mp4",
+            },
+            subtitles: { fr: "https://cdn.example.com/fr.srt" },
+            subtitle_preflight: {
+              es: { status: "ok", changes_count: "0" },
+              fr: { status: "review_required", changes_count: "3" },
+            },
+            subtitle_export: {
+              es: { status: "blocked", error: "alignment failed" },
+              fr: { status: "exported", alignment_loss: "0.365" },
+            },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line) => {
+      errors.push(String(line));
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--languages",
+      "es,fr",
+      "--subtitle",
+      "es=https://x/es.srt",
+      "--subtitle",
+      "fr=https://x/fr.srt",
+      "--export-srt",
+      "--output",
+      "out/clip.mp4",
+    ]);
+
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toEqual(["out/clip.es.mp4", "out/clip.fr.mp4", "out/clip.fr.srt"]);
+    expect(errors).toContain("fr: subtitles exported, alignment loss 0.365");
+    expect(errors).toContain("es: subtitles blocked — alignment failed");
+    // A review_required preflight means the pipeline rewrote lines the caller
+    // submitted; that has to reach the terminal, not just the envelope.
+    expect(errors).toContain("fr: script review_required, 3 change(s) to your lines");
+    expect(errors).toContain("es: script ok, 0 change(s) to your lines");
   });
 });
 

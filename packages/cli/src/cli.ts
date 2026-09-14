@@ -267,6 +267,19 @@ dubbing options (async-only):
                           on-camera speaker, or when preserving the exact
                           original picture matters more than matching lip
                           movement.
+  --subtitle <lang>=<src> Target-language script for one language: the lines
+                          you want spoken, not a source transcript. Repeat it
+                          once per language, and give every language in
+                          --languages exactly one. <src> is a local .srt/.vtt
+                          file or an https URL:
+                          --subtitle ja=ja.srt --subtitle es=https://x/es.vtt
+  --export-srt            Also return a re-timed .srt per language, aligned
+                          against the delivered audio and keeping your lines
+                          verbatim. Requires --subtitle. Each file is written
+                          beside its video (clip.es.mp4 -> clip.es.srt), so
+                          --output may not end in .srt. Two status lines per
+                          language are printed: what the pipeline made of your
+                          script, and how the export came out.
   --output <path>         Filename template. One file is written per language,
                           with the code inserted before the extension:
                           --output clip.mp4 writes clip.es.mp4, clip.fr.mp4.
@@ -1329,6 +1342,87 @@ export function languageOutputPath(template: string, language: string): string {
   return `${template}.${language}.mp4`;
 }
 
+/** The subtitle companion to one dubbed video's path: `clip.es.mp4` becomes
+ * `clip.es.srt`. Derived from the video path rather than from the template so
+ * the pair always lands side by side under a single `--output`, and using the
+ * same "a dot before the last separator is not an extension" rule as
+ * `languageOutputPath`. */
+export function subtitleOutputPath(videoPath: string): string {
+  const dot = videoPath.lastIndexOf(".");
+  const slash = Math.max(videoPath.lastIndexOf("/"), videoPath.lastIndexOf("\\"));
+  if (dot > slash + 1) {
+    return `${videoPath.slice(0, dot)}.srt`;
+  }
+  return `${videoPath}.srt`;
+}
+
+/** Parse the repeatable `--subtitle <language>=<path-or-url>` into the SDK's
+ * `subtitles` map. The split is on the FIRST "=" so a signed URL keeps its own
+ * query string intact. Language codes are not validated and the set is not
+ * compared against `--languages`: the API owns both rules and names the
+ * offending code itself, and a copy here would reject a language added
+ * server-side later. */
+export function parseSubtitles(
+  values: string[] | undefined,
+): Record<string, string> | undefined {
+  if (!values || values.length === 0) return undefined;
+  const subtitles: Record<string, string> = {};
+  for (const value of values) {
+    const eq = value.indexOf("=");
+    const language = eq > 0 ? value.slice(0, eq).trim() : "";
+    const source = eq > 0 ? value.slice(eq + 1).trim() : "";
+    if (language.length === 0 || source.length === 0) {
+      fail(
+        `invalid --subtitle "${value}". Expected <language>=<path-or-url>, e.g. --subtitle ja=ja.srt`,
+      );
+    }
+    if (subtitles[language] !== undefined) {
+      fail(`--subtitle ${language} given twice — one script per language`);
+    }
+    subtitles[language] = source;
+  }
+  return subtitles;
+}
+
+/** One status line per language for the scripts that were submitted, read off
+ * the finished task's `subtitle_preflight`.
+ *
+ * Worth printing on its own: `review_required` means the pipeline ALTERED
+ * lines in the script the caller wrote, and `changes_count` says how many. A
+ * caller who is never told that has no reason to go looking. The count arrives
+ * as a string on a finished task, so it goes through Number(). */
+export function subtitlePreflightLines(result: DubbingResult): string[] {
+  const reports = result.subtitle_preflight ?? {};
+  return Object.keys(reports)
+    .sort()
+    .map((language) => {
+      const report = reports[language] ?? {};
+      const raw = report.changes_count;
+      const changes = raw === undefined || raw === null ? NaN : Number(raw);
+      const detail = Number.isFinite(changes) ? `, ${changes} change(s) to your lines` : "";
+      return `${language}: script ${report.status ?? "unknown"}${detail}`;
+    });
+}
+
+/** One status line per language for an `--export-srt` run, printed whether or
+ * not an SRT came back: an export the pipeline blocked still delivers the
+ * dubbed videos, and silence there would read as a lost file. The alignment
+ * loss arrives as a string on a finished task and as a number elsewhere, so it
+ * goes through Number() and is only shown when it is actually a number. */
+export function subtitleExportLines(result: DubbingResult): string[] {
+  const reports = result.subtitle_export ?? {};
+  return Object.keys(reports)
+    .sort()
+    .map((language) => {
+      const report = reports[language] ?? {};
+      const raw = report.alignment_loss;
+      const loss = raw === undefined || raw === null ? NaN : Number(raw);
+      const detail = Number.isFinite(loss) ? `, alignment loss ${loss}` : "";
+      const error = report.error ? ` — ${report.error}` : "";
+      return `${language}: subtitles ${report.status ?? "unknown"}${detail}${error}`;
+    });
+}
+
 /** Default wait timeout for `sonilo dubbing`, in milliseconds.
  *
  * The dubbing backend polls its own pipeline for up to 7200000 ms (2 hours)
@@ -1354,12 +1448,26 @@ export function parseDubbingArgs(argv: string[]): {
       languages: { type: "string" },
       ducking: { type: "boolean" },
       "no-lipsync": { type: "boolean" },
+      subtitle: { type: "string", multiple: true },
+      "export-srt": { type: "boolean" },
       output: { type: "string" },
       timeout: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
+  }
+  // An --output template ending in .srt would make the exported subtitle and
+  // the dubbed video resolve to the same path (clip.srt -> clip.es.srt for
+  // both), and the video — the thing that was paid for — is written first, so
+  // the subtitle would silently overwrite it. Refused rather than renamed
+  // around, because any name this picked instead would not be the one asked
+  // for. This is the only way the collision arises: a template with no
+  // extension gets .mp4 appended.
+  if (values["export-srt"] === true && (values.output ?? "").toLowerCase().endsWith(".srt")) {
+    fail(
+      "--output cannot end in .srt with --export-srt — the subtitle would overwrite the dubbed video. Use a video extension, e.g. --output clip.mp4",
+    );
   }
   let languages: string[] | undefined;
   if (values.languages !== undefined) {
@@ -1383,6 +1491,8 @@ export function parseDubbingArgs(argv: string[]): {
       // direction worth a flag is turning it off. Left undefined otherwise so
       // the server keeps owning the default.
       lipsync: values["no-lipsync"] === true ? false : undefined,
+      subtitles: parseSubtitles(values.subtitle),
+      exportSrt: values["export-srt"] === true ? true : undefined,
     },
     output: values.output,
     timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
@@ -1402,7 +1512,21 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   const template = outputPath(output, "mp4");
   for (const language of languages) {
     const url = outputs[language]!;
-    await writeAudio(await download(url), languageOutputPath(template, language));
+    const videoPath = languageOutputPath(template, language);
+    await writeAudio(await download(url), videoPath);
+    // The re-timed SRT lands beside its video. A language is absent from the
+    // map when its export was blocked — that does not fail the task, the
+    // video is still delivered, and the status lines below say what happened.
+    const subtitleUrl = result.subtitles?.[language];
+    if (subtitleUrl !== undefined) {
+      await writeAudio(await download(subtitleUrl), subtitleOutputPath(videoPath));
+    }
+  }
+  for (const line of subtitlePreflightLines(result)) {
+    console.error(line);
+  }
+  for (const line of subtitleExportLines(result)) {
+    console.error(line);
   }
 }
 
