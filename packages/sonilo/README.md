@@ -426,9 +426,22 @@ Rules:
 `subtitle_export` (how each re-timed SRT came out) are maps keyed by language.
 Their numeric fields — `cue_count`, `changes_count`, `alignment_loss` — are
 typed `number | string`, because a finished task carries them as strings; read
-them through `Number(...)`. An export whose `status` is `blocked` does not fail
-the task: the dubbed videos are still delivered and `subtitles` simply lacks
-that language.
+them through `Number(...)`. `report_url` is `string | null` — the key is always
+written, so test the value, not the key. An export whose `status` is `blocked`
+does not fail the task: the dubbed videos are still delivered and `subtitles`
+simply lacks that language.
+
+`submit()` returns a `DubbingTask`: the shared `SfxTask` plus the
+acknowledgement's own `subtitle_preflight`. A `review_required` status there
+means the pipeline **changed lines in the script you submitted**, and
+`changes_count` says how many — worth checking without waiting for the dub:
+
+```ts
+const task = await client.dubbing.submit({ videoUrl, languages, subtitles });
+for (const [language, report] of Object.entries(task.subtitle_preflight ?? {})) {
+  if (report.status !== "ok") console.warn(language, report.status, report.issues);
+}
+```
 
 ## Video analysis
 

@@ -313,9 +313,13 @@ The scripts are **target-language** — the lines you want spoken, not a source
 transcript — and the set of languages must match `--languages` exactly. A local
 file must be `.srt` or `.vtt` and at most 1 MiB; anything starting with
 `https://` is treated as a URL. Each re-timed file is written beside its video
-(`clip.es.mp4` → `clip.es.srt`), and one status line per language is printed.
-A language whose export the pipeline blocks still gets its dubbed video; only
-the `.srt` is missing.
+(`clip.es.mp4` → `clip.es.srt`), which is why `--output` may not itself end in
+`.srt` with `--export-srt` — the subtitle would land on top of the video.
+
+Two status lines per language are printed: what the pipeline made of your
+script — `review_required` means it **changed lines you wrote**, and the count
+says how many — and how the export came out. A language whose export the
+pipeline blocks still gets its dubbed video; only the `.srt` is missing.
 
 `--no-lipsync` skips the mouth re-render, which is on by default: the
 deliverable then keeps your source's own frames, resolution and frame rate and

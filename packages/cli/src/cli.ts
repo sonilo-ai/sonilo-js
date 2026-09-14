@@ -1377,6 +1377,26 @@ export function parseSubtitles(
   return subtitles;
 }
 
+/** One status line per language for the scripts that were submitted, read off
+ * the finished task's `subtitle_preflight`.
+ *
+ * Worth printing on its own: `review_required` means the pipeline ALTERED
+ * lines in the script the caller wrote, and `changes_count` says how many. A
+ * caller who is never told that has no reason to go looking. The count arrives
+ * as a string on a finished task, so it goes through Number(). */
+export function subtitlePreflightLines(result: DubbingResult): string[] {
+  const reports = result.subtitle_preflight ?? {};
+  return Object.keys(reports)
+    .sort()
+    .map((language) => {
+      const report = reports[language] ?? {};
+      const raw = report.changes_count;
+      const changes = raw === undefined || raw === null ? NaN : Number(raw);
+      const detail = Number.isFinite(changes) ? `, ${changes} change(s) to your lines` : "";
+      return `${language}: script ${report.status ?? "unknown"}${detail}`;
+    });
+}
+
 /** One status line per language for an `--export-srt` run, printed whether or
  * not an SRT came back: an export the pipeline blocked still delivers the
  * dubbed videos, and silence there would read as a lost file. The alignment
@@ -1430,6 +1450,18 @@ export function parseDubbingArgs(argv: string[]): {
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
   }
+  // An --output template ending in .srt would make the exported subtitle and
+  // the dubbed video resolve to the same path (clip.srt -> clip.es.srt for
+  // both), and the video — the thing that was paid for — is written first, so
+  // the subtitle would silently overwrite it. Refused rather than renamed
+  // around, because any name this picked instead would not be the one asked
+  // for. This is the only way the collision arises: a template with no
+  // extension gets .mp4 appended.
+  if (values["export-srt"] === true && (values.output ?? "").toLowerCase().endsWith(".srt")) {
+    fail(
+      "--output cannot end in .srt with --export-srt — the subtitle would overwrite the dubbed video. Use a video extension, e.g. --output clip.mp4",
+    );
+  }
   let languages: string[] | undefined;
   if (values.languages !== undefined) {
     languages = values.languages
@@ -1482,6 +1514,9 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
     if (subtitleUrl !== undefined) {
       await writeAudio(await download(subtitleUrl), subtitleOutputPath(videoPath));
     }
+  }
+  for (const line of subtitlePreflightLines(result)) {
+    console.error(line);
   }
   for (const line of subtitleExportLines(result)) {
     console.error(line);

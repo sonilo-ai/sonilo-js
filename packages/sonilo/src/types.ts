@@ -649,7 +649,9 @@ export interface SubtitlePreflightReport {
   cue_count?: number | string;
   issues?: string[];
   changes_count?: number | string;
-  report_url?: string;
+  /** `null`, not absent, when there is no report to link to: the key is
+   * always written. Test the value, never just the key's presence. */
+  report_url?: string | null;
   [key: string]: unknown;
 }
 
@@ -666,8 +668,23 @@ export interface SubtitleExportReport {
   alignment_loss?: number | string;
   issues?: string[];
   error?: string;
-  report_url?: string;
+  /** `null`, not absent, when there is no report to link to: the key is
+   * always written. Test the value, never just the key's presence. */
+  report_url?: string | null;
   [key: string]: unknown;
+}
+
+/**
+ * The 202 acknowledgement from /v1/dubbing. Additive over the `SfxTask` every
+ * other endpoint returns — that shape is shared and stays untouched — because
+ * this one endpoint answers with a preflight report per submitted script.
+ *
+ * A `review_required` status here means the pipeline altered lines in the
+ * script that was submitted. It is the one moment a caller who never polls
+ * the task can still learn that, so it is worth surfacing.
+ */
+export interface DubbingTask extends SfxTask {
+  subtitle_preflight?: Record<string, SubtitlePreflightReport>;
 }
 
 export interface DubbingParams {

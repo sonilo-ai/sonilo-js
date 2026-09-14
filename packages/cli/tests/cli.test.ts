@@ -36,6 +36,7 @@ import {
   stemOutputPath,
   subtitleExportLines,
   subtitleOutputPath,
+  subtitlePreflightLines,
   variantOutputPath,
 } from "../src/cli.js";
 import { writeCredential, type StoredCredential } from "../src/credentials.js";
@@ -1715,6 +1716,30 @@ describe("parseDubbingArgs", () => {
     expect(params.exportSrt).toBeUndefined();
   });
 
+  it("refuses an --output ending in .srt with --export-srt, which would overwrite the video", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() =>
+      parseDubbingArgs([
+        "--video-url",
+        "https://x/v.mp4",
+        "--subtitle",
+        "es=es.srt",
+        "--export-srt",
+        "--output",
+        "clip.SRT",
+      ]),
+    ).toThrow("process.exit");
+    vi.restoreAllMocks();
+  });
+
+  it("allows an --output ending in .srt when no SRT is being exported", () => {
+    const { output } = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--output", "clip.srt"]);
+    expect(output).toBe("clip.srt");
+  });
+
   it("sends lipsync=false only for --no-lipsync, since the server default is on", () => {
     const off = parseDubbingArgs(["--video-url", "https://x/v.mp4", "--no-lipsync"]);
     expect(off.params.lipsync).toBe(false);
@@ -1791,6 +1816,28 @@ describe("subtitleExportLines", () => {
 
   it("is empty when no scripts were sent", () => {
     expect(subtitleExportLines({ task_id: "db1", status: "succeeded" })).toEqual([]);
+  });
+});
+
+describe("subtitlePreflightLines", () => {
+  it("names the status and how many of the caller's lines were changed", () => {
+    expect(
+      subtitlePreflightLines({
+        task_id: "db1",
+        status: "succeeded",
+        subtitle_preflight: {
+          ja: { status: "review_required", cue_count: "5", changes_count: "2" },
+          es: { status: "ok", changes_count: 0 },
+        },
+      }),
+    ).toEqual([
+      "es: script ok, 0 change(s) to your lines",
+      "ja: script review_required, 2 change(s) to your lines",
+    ]);
+  });
+
+  it("is empty when no scripts were sent", () => {
+    expect(subtitlePreflightLines({ task_id: "db1", status: "succeeded" })).toEqual([]);
   });
 });
 
@@ -1919,6 +1966,10 @@ describe("runDubbing", () => {
               fr: "https://cdn.example.com/fr.mp4",
             },
             subtitles: { fr: "https://cdn.example.com/fr.srt" },
+            subtitle_preflight: {
+              es: { status: "ok", changes_count: "0" },
+              fr: { status: "review_required", changes_count: "3" },
+            },
             subtitle_export: {
               es: { status: "blocked", error: "alignment failed" },
               fr: { status: "exported", alignment_loss: "0.365" },
@@ -1953,6 +2004,10 @@ describe("runDubbing", () => {
     expect(written).toEqual(["out/clip.es.mp4", "out/clip.fr.mp4", "out/clip.fr.srt"]);
     expect(errors).toContain("fr: subtitles exported, alignment loss 0.365");
     expect(errors).toContain("es: subtitles blocked — alignment failed");
+    // A review_required preflight means the pipeline rewrote lines the caller
+    // submitted; that has to reach the terminal, not just the envelope.
+    expect(errors).toContain("fr: script review_required, 3 change(s) to your lines");
+    expect(errors).toContain("es: script ok, 0 change(s) to your lines");
   });
 });
 

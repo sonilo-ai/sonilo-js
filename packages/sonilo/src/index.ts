@@ -28,6 +28,7 @@ export type {
   DubbingLanguage,
   DubbingParams,
   DubbingResult,
+  DubbingTask,
   DuckingResult,
   ErrorEvent,
   MusicMediaEntry,

@@ -180,6 +180,60 @@ describe("dubbing", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("refuses exportSrt with an empty subtitles map, not just an absent one", async () => {
+    const { fetch, client } = ackClient();
+    await expect(
+      client.dubbing.submit({ videoUrl: "https://x/v.mp4", subtitles: {}, exportSrt: true }),
+    ).rejects.toBeInstanceOf(SoniloError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("omits export_srt entirely when exportSrt is unset", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({
+      videoUrl: "https://x/v.mp4",
+      subtitles: { ja: "https://x/ja.srt" },
+    });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("export_srt")).toBe(false);
+  });
+
+  it("treats an uppercased HTTPS:// subtitle as a URL, not a local path", async () => {
+    const { fetch, client } = ackClient();
+    await client.dubbing.submit({
+      videoUrl: "https://x/v.mp4",
+      subtitles: { ja: "HTTPS://X/JA.SRT" },
+    });
+    // A text field, not a File: scheme casing must never send the client
+    // looking for a local file by that name.
+    const part = (fetch.mock.calls[0]![1]!.body as FormData).get("subtitles[ja]");
+    expect(part).toBe("HTTPS://X/JA.SRT");
+  });
+
+  it("surfaces the 202's subtitle_preflight from submit()", async () => {
+    const fetch = vi.fn(async () =>
+      jsonResponse(
+        {
+          task_id: "db1",
+          status: "processing",
+          subtitle_preflight: {
+            ja: { status: "review_required", cue_count: "5", changes_count: "2", report_url: null },
+          },
+        },
+        202,
+      ),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    const task = await client.dubbing.submit({
+      videoUrl: "https://x/v.mp4",
+      subtitles: { ja: "https://x/ja.srt" },
+    });
+    expect(task.subtitle_preflight?.ja?.status).toBe("review_required");
+    expect(task.subtitle_preflight?.ja?.changes_count).toBe("2");
+    // The server writes the key with a null value rather than omitting it.
+    expect(task.subtitle_preflight?.ja?.report_url).toBeNull();
+  });
+
   it("sends export_srt alongside the subtitles it requires", async () => {
     const { fetch, client } = ackClient();
     await client.dubbing.submit({

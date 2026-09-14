@@ -4,7 +4,7 @@ import { toUploadBlob } from "../upload.js";
 import type {
   DubbingParams,
   DubbingResult,
-  SfxTask,
+  DubbingTask,
   SubtitleInput,
   WaitOptions,
 } from "../types.js";
@@ -96,7 +96,11 @@ export async function buildDubbingForm(params: DubbingParams): Promise<FormData>
     }
   }
   if (params.exportSrt !== undefined) {
-    if (params.exportSrt && params.subtitles === undefined) {
+    // Counted, not tested for undefined: an empty map is what building
+    // `subtitles` from an empty list produces, and it would otherwise slip
+    // past this guard and send `export_srt` alone — the exact 422 the guard
+    // exists to pre-empt.
+    if (params.exportSrt && Object.keys(params.subtitles ?? {}).length === 0) {
       throw new SoniloError("exportSrt requires subtitles — there is nothing to align against");
     }
     form.set("export_srt", String(params.exportSrt));
@@ -109,12 +113,17 @@ export async function buildDubbingForm(params: DubbingParams): Promise<FormData>
 export class Dubbing {
   constructor(private readonly client: SoniloClient) {}
 
-  async submit(params: DubbingParams): Promise<SfxTask> {
+  /** The acknowledgement carries `subtitle_preflight` when scripts were sent,
+   * which is why this returns `DubbingTask` rather than the shared `SfxTask`:
+   * a `review_required` preflight means the pipeline altered lines in the
+   * script that was submitted, and typing it away hides that from every
+   * caller who only ever sees the 202. */
+  async submit(params: DubbingParams): Promise<DubbingTask> {
     const res = await this.client.request("/v1/dubbing", {
       method: "POST",
       body: await buildDubbingForm(params),
     });
-    return (await res.json()) as SfxTask;
+    return (await res.json()) as DubbingTask;
   }
 
   async generate(params: DubbingParams, opts?: WaitOptions): Promise<DubbingResult> {
