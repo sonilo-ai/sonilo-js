@@ -624,6 +624,52 @@ export type DubbingLanguage =
   | "id"
   | (string & {});
 
+/**
+ * One target-language subtitle script for /v1/dubbing.
+ *
+ * A string starting with `https://` (case-insensitive) travels as a URL; any
+ * other string is a local file path (Node.js only), read and uploaded. The
+ * split is unambiguous — a real path cannot start with `https://` — and it
+ * matches how `video` already accepts a path string. A `File` is accepted for
+ * browsers, where paths do not exist; its `.name` supplies the filename.
+ *
+ * Blobs, byte arrays and streams are deliberately NOT accepted, unlike
+ * `VideoInput`: the server requires an uploaded part's filename to end in
+ * `.srt` or `.vtt`, and those types carry no name to derive one from.
+ */
+export type SubtitleInput = string | File;
+
+/** One language's entry in the `subtitle_preflight` map: what the pipeline
+ * made of that script before anything was charged. The pipeline returns these
+ * numbers as strings on a finished task, so every numeric field is typed
+ * `number | string` — read them through `Number(...)`. */
+export interface SubtitlePreflightReport {
+  /** `ok`, `review_required` or `blocked`. Open for values added later. */
+  status?: "ok" | "review_required" | "blocked" | (string & {});
+  cue_count?: number | string;
+  issues?: string[];
+  changes_count?: number | string;
+  report_url?: string;
+  [key: string]: unknown;
+}
+
+/** One language's entry in the `subtitle_export` map: how the re-timed SRT
+ * for that language came out. A `blocked` export does not fail the task — the
+ * dubbed videos are still delivered, and `subtitles` simply lacks that
+ * language. Numbers may arrive as strings, as in `SubtitlePreflightReport`. */
+export interface SubtitleExportReport {
+  /** `exported`, `exported_review_required` or `blocked`. Open for values
+   * added later. */
+  status?: "exported" | "exported_review_required" | "blocked" | (string & {});
+  /** How far the re-timed cues drifted from the delivered audio during forced
+   * alignment. Lower is better. */
+  alignment_loss?: number | string;
+  issues?: string[];
+  error?: string;
+  report_url?: string;
+  [key: string]: unknown;
+}
+
 export interface DubbingParams {
   /** Exactly one of `video` / `videoUrl`. */
   video?: VideoInput;
@@ -640,6 +686,32 @@ export interface DubbingParams {
    * always kept, at a constant level unless this is `true`. Free.
    */
   ducking?: boolean;
+  /**
+   * Re-render the speaker's mouth to match the dubbed audio. Default ON
+   * server-side — that is what every dubbing task did before the parameter
+   * existed — so it is sent only when you pass it. `false` keeps your
+   * source's own frames, resolution and frame rate and replaces the audio
+   * alone.
+   */
+  lipsync?: boolean;
+  /**
+   * One subtitle script per target language, keyed by language code:
+   * `{ ja: "./ja.srt", es: "https://example.com/es.vtt" }`.
+   *
+   * These are TARGET-language scripts carrying the lines you want spoken, not
+   * source-language transcripts. The key set must match `languages` exactly —
+   * that rule is enforced server-side, before anything is charged, and is
+   * deliberately not duplicated here: a local copy would also break a caller
+   * who relies on the server default `["zh_cn", "es", "fr"]` without passing
+   * `languages` at all.
+   */
+  subtitles?: Record<string, SubtitleInput>;
+  /**
+   * Return a re-timed SRT per language alongside the dubbed videos. Requires
+   * `subtitles`. The delivered audio of each language is force-aligned
+   * against that language's script, keeping its lines verbatim.
+   */
+  exportSrt?: boolean;
 }
 
 export interface DubbingResult extends BaseTaskResult {
@@ -649,6 +721,15 @@ export interface DubbingResult extends BaseTaskResult {
    * `video` slot — a dubbing task renders N artifacts, one per language.
    */
   outputs?: Record<string, string>;
+  /**
+   * One re-timed `.srt` URL per language. Only present when the request set
+   * `exportSrt`, and a language whose export was blocked is simply absent.
+   */
+  subtitles?: Record<string, string>;
+  /** What the pipeline made of each submitted script, keyed by language. */
+  subtitle_preflight?: Record<string, SubtitlePreflightReport>;
+  /** How each language's re-timed SRT came out, keyed by language. */
+  subtitle_export?: Record<string, SubtitleExportReport>;
 }
 
 export interface VideoAnalysisParams {
