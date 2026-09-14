@@ -379,6 +379,11 @@ boolean (default off, free) ducks the background music/effects bed under the
 dubbed voice while it speaks; when off the bed is kept at a constant level.
 Every endpoint's `ducking` is default-off, so this one is no exception.
 
+The optional `lipsync` boolean is **default on**: the speaker's mouth is
+re-rendered to match the dubbed audio. Pass `false` and the deliverable keeps
+your source's own frames, resolution and frame rate, with only the audio
+replaced.
+
 Dubbing is async-only, and the source video may be at most 300 seconds long.
 You are billed per language. Dubbing has **no free trial allowance** — unlike
 every other endpoint, every call bills from the first one (see
@@ -387,6 +392,43 @@ every other endpoint, every call bills from the first one (see
 The result is a `DubbingResult`, whose `outputs` is a map of language code to
 dubbed `.mp4` URL — not the `audio`/`video`/`output_url` shape the other
 endpoints use.
+
+### Subtitle scripts
+
+`subtitles` supplies the lines to speak, one script per target language:
+
+```ts
+const result = await client.dubbing.generate(
+  {
+    videoUrl: "https://example.com/clip.mp4",
+    languages: ["ja", "es"],
+    subtitles: { ja: "./ja.srt", es: "https://example.com/es.vtt" },
+    exportSrt: true,
+  },
+  { timeout: 7_200_000 },
+);
+console.log(result.subtitles?.ja); // re-timed .srt URL
+```
+
+Rules:
+
+- These are **target-language** scripts, not source-language transcripts.
+- The keys must match `languages` exactly — a missing or extra code is a 422,
+  checked server-side before anything is charged.
+- A value starting with `https://` is a URL; any other string is a local file
+  path (Node.js only). A browser can pass a `File` instead. The filename must
+  end in `.srt` or `.vtt`, and an uploaded script is at most 1 MiB.
+- `exportSrt` requires `subtitles`. With it, each language's delivered audio is
+  force-aligned against its script and a re-timed SRT is returned under
+  `subtitles`, keeping your lines verbatim.
+
+`subtitle_preflight` (what the pipeline made of each script) and
+`subtitle_export` (how each re-timed SRT came out) are maps keyed by language.
+Their numeric fields — `cue_count`, `changes_count`, `alignment_loss` — are
+typed `number | string`, because a finished task carries them as strings; read
+them through `Number(...)`. An export whose `status` is `blocked` does not fail
+the task: the dubbed videos are still delivered and `subtitles` simply lacks
+that language.
 
 ## Video analysis
 

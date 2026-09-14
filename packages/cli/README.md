@@ -202,8 +202,9 @@ Run `sonilo --help` for the full option list, including `--preserve-speech` and
 (`--prompt-influence <0-1>` sets how strongly the music follows the prompt —
 API default 0.5, lower lets the video lead, free of charge), `--music-prompt` /
 `--sfx-prompt` / `--ducking` / `--stem` for the `video-to-sound` commands,
-`--languages` / `--timeout` for `dubbing`, `--variants` for the five commands
-that take it, `--stems` for `text-to-music` and `video-to-music` (see
+`--languages` / `--subtitle` / `--export-srt` / `--timeout` for `dubbing`,
+`--variants` for the five commands that take it, `--stems` for
+`text-to-music` and `video-to-music` (see
 [Stems](#stems) below), and the `--format` options each command accepts. Music commands take `m4a`
 (default), `wav` or `mp3` (320 kbps); anything but `m4a` implies `--async`.
 
@@ -297,6 +298,28 @@ you run it:
 - `--timeout` defaults to 7200000 ms (2 hours), matching the backend's own
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
+
+To supply the lines yourself, pass one `--subtitle <language>=<path-or-url>`
+per target language, and add `--export-srt` to get each language's script back
+re-timed against the delivered audio:
+
+```bash
+sonilo dubbing --video clip.mp4 --languages ja,es \
+  --subtitle ja=ja.srt --subtitle es=https://example.com/es.vtt \
+  --export-srt --output clip.mp4
+```
+
+The scripts are **target-language** — the lines you want spoken, not a source
+transcript — and the set of languages must match `--languages` exactly. A local
+file must be `.srt` or `.vtt` and at most 1 MiB; anything starting with
+`https://` is treated as a URL. Each re-timed file is written beside its video
+(`clip.es.mp4` → `clip.es.srt`), and one status line per language is printed.
+A language whose export the pipeline blocks still gets its dubbed video; only
+the `.srt` is missing.
+
+`--no-lipsync` skips the mouth re-render, which is on by default: the
+deliverable then keeps your source's own frames, resolution and frame rate and
+only the audio is replaced.
 
 a non-`m4a` `--format` (or `--preserve-speech` / `--isolate-vocals` / `--variants`
 above 1 / `--stems`) submits an async task and polls it instead of streaming
