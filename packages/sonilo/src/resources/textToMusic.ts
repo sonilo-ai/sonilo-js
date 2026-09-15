@@ -10,7 +10,7 @@ export class TextToMusic {
   async *stream(params: TextToMusicParams): AsyncGenerator<StreamEvent, void, undefined> {
     const form = new FormData();
     form.set("prompt", params.prompt);
-    form.set("duration", String(params.duration));
+    if (params.duration !== undefined) form.set("duration", String(params.duration));
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }
@@ -46,7 +46,7 @@ export class TextToMusic {
     }
     const form = new FormData();
     form.set("prompt", params.prompt);
-    form.set("duration", String(params.duration));
+    if (params.duration !== undefined) form.set("duration", String(params.duration));
     if (params.segments !== undefined) {
       form.set("segments", JSON.stringify(params.segments));
     }

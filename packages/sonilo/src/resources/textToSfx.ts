@@ -7,7 +7,7 @@ export class TextToSfx {
   async submit(params: TextToSfxParams): Promise<SfxTask> {
     const form = new FormData();
     form.set("prompt", params.prompt);
-    form.set("duration", String(params.duration));
+    if (params.duration !== undefined) form.set("duration", String(params.duration));
     if (params.audioFormat !== undefined) form.set("audio_format", params.audioFormat);
     const res = await this.client.request("/v1/text-to-sfx", {
       method: "POST",

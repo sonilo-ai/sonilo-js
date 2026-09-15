@@ -42,6 +42,18 @@ const track = await sonilo.textToMusic.generate({
 // track.audio is a Uint8Array of MP3 bytes
 ```
 
+`duration` is optional. Leave it out and Sonilo picks the length from your
+prompt — or from `segments` when you pass them, in which case the track runs to
+the last segment's `start` plus 30 seconds. `textToSfx` takes an optional
+`duration` too (from 0.5 seconds), so an effect can be asked for with nothing
+but a prompt:
+
+```ts
+const effect = await sonilo.textToSfx.generate({
+  prompt: "a small metal door latch clicking shut",
+});
+```
+
 ## Video to music
 
 ```ts

@@ -75,7 +75,7 @@ whoami options:
 
 text-to-music options:
   --prompt <text>       Required. What the music should sound like.
-  --duration <seconds>  Required. Track length.
+  --duration <seconds>  Optional. Track length; omitted, the length follows the prompt.
   --output <path>       Where to save the audio (default: ./output.<ext>)
   --format <m4a|wav|mp3>  Output container. Anything but m4a forces
                         --async. mp3 is 320 kbps. Default: m4a
@@ -129,7 +129,7 @@ video-to-music options:
 
 text-to-sfx options:
   --prompt <text>        Required. What the sound effect should be.
-  --duration <seconds>   Required. Effect length.
+  --duration <seconds>   Optional. Effect length from 0.5; omitted, a default is used.
   --output <path>        Where to save the audio (default: ./output.<ext>)
   --format <wav|mp3|aac|flac>   Output format. Default: wav
 
@@ -792,7 +792,8 @@ export async function runTextToMusic(client: SoniloClient, argv: string[]): Prom
     },
   });
   const prompt = requireFlag(values.prompt, "prompt");
-  const duration = Number(requireFlag(values.duration, "duration"));
+  // Optional: omitted, Sonilo picks the length from the prompt.
+  const duration = values.duration !== undefined ? Number(values.duration) : undefined;
   const format = parseFormat(values.format, ["m4a", "wav", "mp3"] as const, "m4a");
   const variantsNum = values.variants !== undefined ? Number(values.variants) : undefined;
   // Sent only when the user opted in, so the server's default-off stands
@@ -940,7 +941,8 @@ export async function runTextToSfx(client: SoniloClient, argv: string[]): Promis
     },
   });
   const prompt = requireFlag(values.prompt, "prompt");
-  const duration = Number(requireFlag(values.duration, "duration"));
+  // Optional: omitted, Sonilo uses its own default length.
+  const duration = values.duration !== undefined ? Number(values.duration) : undefined;
   const format = parseFormat(values.format, ["wav", "mp3", "aac", "flac"] as const, "wav");
   const result = await client.textToSfx.generate({
     prompt,

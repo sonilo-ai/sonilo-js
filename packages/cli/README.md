@@ -144,6 +144,10 @@ sonilo usage --days 7
 # Generate music from a text prompt
 sonilo text-to-music --prompt "warm lo-fi piano, rain in the background" --duration 30
 
+# --duration is optional on text-to-music and text-to-sfx; omitted, the length
+# follows the prompt (music) or a default is used (sfx).
+sonilo text-to-music --prompt "warm lo-fi piano, rain in the background"
+
 # Generate music matched to a video
 sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
 

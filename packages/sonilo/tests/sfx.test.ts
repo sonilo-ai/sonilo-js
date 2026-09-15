@@ -32,6 +32,23 @@ describe("textToSfx", () => {
     expect(form.get("audio_format")).toBe("wav");
   });
 
+  // The API resolves an omitted duration itself, so the client leaves the
+  // field out rather than inventing a number.
+  it("submit omits an absent duration", async () => {
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.textToSfx.submit({ prompt: "a door latch" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("duration")).toBeNull();
+  });
+
+  it("submit keeps a fractional duration", async () => {
+    // The API's floor is 0.5 sec: the shortest effects run under a second.
+    const { client, calls } = mockClient(() => jsonResponse(ACK, 202));
+    await client.textToSfx.submit({ prompt: "a door latch", duration: 0.5 });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("duration")).toBe("0.5");
+  });
+
   it("generate submits then waits", async () => {
     let polls = 0;
     const { client } = mockClient((url) => {
