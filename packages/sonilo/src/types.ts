@@ -75,7 +75,10 @@ export interface Track {
 
 export interface TextToMusicParams {
   prompt: string;
-  duration: number;
+  /** Optional. Left out, Sonilo picks the length from the prompt — or from
+   * `segments` when you pass them, in which case the track runs to the last
+   * segment's `start` plus 30 seconds. */
+  duration?: number;
   segments?: Segment[];
   /** "stream" (default) or "async" (required by `submit()` and by any
    * `outputFormat` other than the m4a default). */
@@ -285,7 +288,9 @@ export interface SfxResult extends BaseTaskResult {
 
 export interface TextToSfxParams {
   prompt: string;
-  duration: number;
+  /** Optional, from 0.5 seconds — the shortest effects run well under a
+   * second. Left out, Sonilo generates its own default length. */
+  duration?: number;
   audioFormat?: SfxAudioFormat;
 }
 

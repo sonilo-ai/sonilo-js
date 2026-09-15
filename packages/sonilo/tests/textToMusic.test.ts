@@ -11,6 +11,15 @@ const EVENTS = [
 ];
 
 describe("textToMusic.generate", () => {
+  // The API infers the length from the prompt (or from `segments`) when none
+  // is given, so the client leaves the field out rather than inventing one.
+  it("omits an absent duration", async () => {
+    const { client, calls } = mockClient(() => ndjsonResponse(EVENTS, 9));
+    await client.textToMusic.generate({ prompt: "cinematic orchestral score" });
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("duration")).toBeNull();
+  });
+
   it("posts form fields and returns the buffered track", async () => {
     const { client, calls } = mockClient(() => ndjsonResponse(EVENTS, 9));
     const track = await client.textToMusic.generate({
