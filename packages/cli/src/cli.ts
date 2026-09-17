@@ -251,10 +251,13 @@ dubbing options (async-only):
   --video-url <url>      Required (or --video). Must be an https URL.
   --languages <list>      Comma-separated target languages. Default: zh_cn,es,fr
                           Supported: en, zh_cn, ja, ko, pt, pt_br, es,
-                          es_419, de, fr, it, ru, th, ar, tr, vi, id.
+                          es_419, de, fr, it, ru, th, ar, tr, vi, id, ta,
+                          ml, kn, gu, pa_in, sd_in.
                           pt_br is Brazilian Portuguese and es_419 Latin
                           American Spanish; plain pt and es stay
-                          unqualified, as does ar.
+                          unqualified, as does ar. pa_in and sd_in are
+                          Punjabi and Sindhi as spoken in India, the only
+                          variants available.
   --ducking               Duck the background music/effects bed under the
                           dubbed voice. Off by default: the bed is kept at a
                           constant level. Free.
