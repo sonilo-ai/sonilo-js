@@ -627,6 +627,14 @@ export type DubbingLanguage =
   | "tr"
   | "vi"
   | "id"
+  | "ta"
+  | "ml"
+  | "kn"
+  | "gu"
+  /** Punjabi as spoken in India — the only variant available, hence the region. */
+  | "pa_in"
+  /** Sindhi as spoken in India — the only variant available, hence the region. */
+  | "sd_in"
   | (string & {});
 
 /**
