@@ -1,5 +1,16 @@
 # sonilo-cli
 
+## 0.19.0
+
+### Minor Changes
+
+- 2c64090: video-analysis: add the `mode` parameter (`both` | `music` | `sfx`, server default `both`). In `both` mode the result also carries a sound-design brief as `sfx_segments` and a single `sfx_prompt`, and the result echoes `mode`; the CLI's JSON brief includes all three when present and takes `--mode`. `mode: "music"` reproduces the previous result shape. Max video duration is now 480 seconds. Price unchanged.
+
+### Patch Changes
+
+- Updated dependencies [2c64090]
+  - sonilo@0.20.0
+
 ## 0.18.2
 
 ### Patch Changes
