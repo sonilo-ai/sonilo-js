@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
-import { parseVideoAnalysisArgs, runVideoAnalysis } from "../src/cli.js";
+import { analysisBrief, parseVideoAnalysisArgs, runVideoAnalysis } from "../src/cli.js";
 import { json, mockClient } from "./helpers.js";
 
 vi.mock("node:fs/promises", () => ({
@@ -21,6 +21,12 @@ const BRIEF = {
   ],
   duration_seconds: 30,
   cost: 0.24,
+};
+const BOTH_BRIEF = {
+  ...BRIEF,
+  mode: "both",
+  sfx_segments: [{ start: 0, end: 12, label: "none", prompt: "wind, distant traffic" }],
+  sfx_prompt: "urban chase: engines, horns, shattering glass",
 };
 
 function briefClient() {
@@ -44,10 +50,49 @@ describe("parseVideoAnalysisArgs", () => {
     expect(params.variantsNum).toBe(2);
   });
 
-  it("leaves prompt and variantsNum undefined when unset", () => {
+  it("leaves prompt, variantsNum and mode undefined when unset", () => {
     const { params } = parseVideoAnalysisArgs(["--video", "clip.mp4"]);
     expect(params.prompt).toBeUndefined();
     expect(params.variantsNum).toBeUndefined();
+    expect(params.mode).toBeUndefined();
+  });
+
+  it("maps --mode onto the SDK params", () => {
+    const { params } = parseVideoAnalysisArgs(["--video", "clip.mp4", "--mode", "sfx"]);
+    expect(params.mode).toBe("sfx");
+  });
+
+  it("rejects a --mode outside both/music/sfx", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() =>
+      parseVideoAnalysisArgs(["--video", "clip.mp4", "--mode", "sound"]),
+    ).toThrow("process.exit");
+    expect(error).toHaveBeenCalledWith("sonilo: --mode must be one of both, music, sfx");
+    vi.restoreAllMocks();
+  });
+});
+
+describe("analysisBrief", () => {
+  it("emits mode, sfx_segments and sfx_prompt when the result carries them", () => {
+    const brief = analysisBrief(BOTH_BRIEF as never);
+    expect(brief.mode).toBe("both");
+    expect(brief.sfx_segments).toEqual([
+      { start: 0, end: 12, label: "none", prompt: "wind, distant traffic" },
+    ]);
+    expect(brief.sfx_prompt).toBe("urban chase: engines, horns, shattering glass");
+    // mode sits right after status so the envelope reads like the API's.
+    expect(Object.keys(brief).slice(0, 3)).toEqual(["task_id", "status", "mode"]);
+  });
+
+  it("omits mode, sfx_segments and sfx_prompt when the result has none", () => {
+    const brief = analysisBrief(BRIEF as never);
+    expect(brief).not.toHaveProperty("mode");
+    expect(brief).not.toHaveProperty("sfx_segments");
+    expect(brief).not.toHaveProperty("sfx_prompt");
+    expect(brief.segments).toHaveLength(1);
   });
 });
 
@@ -114,5 +159,23 @@ describe("runVideoAnalysis", () => {
     const form = calls[0]!.init.body as FormData;
     expect(form.get("prompt")).toBe("focus on the chase");
     expect(form.get("variants_num")).toBe("2");
+    expect(form.has("mode")).toBe(false);
+  });
+
+  it("sends mode on the wire and prints the sound-design half of the brief", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/video-analysis") ? json(ACK) : json(BOTH_BRIEF),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runVideoAnalysis(client, ["--video-url", "https://x/v.mp4", "--mode", "both"]);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("mode")).toBe("both");
+    const printed = JSON.parse(log.mock.calls.at(-1)![0] as string);
+    expect(printed.mode).toBe("both");
+    expect(printed.sfx_prompt).toBe("urban chase: engines, horns, shattering glass");
+    expect(printed.sfx_segments).toHaveLength(1);
   });
 });

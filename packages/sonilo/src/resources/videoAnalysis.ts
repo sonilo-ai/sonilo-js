@@ -14,7 +14,10 @@ import type {
  * download. The result is the work order: `segments` (a time-aligned section
  * plan) plus one `prompt` per requested variation, each ready to hand
  * straight to videoToMusic, videoToSfx, videoToSound or their
- * video-to-video counterparts.
+ * video-to-video counterparts. `mode` picks the brief: `"both"` (the server
+ * default) adds a sound-design brief in `sfx_segments` / `sfx_prompt` in
+ * the same call, `"music"` or `"sfx"` returns only that one. Videos may be
+ * at most 480 seconds long.
  *
  * The method is `analyze`, not `generate`, for that reason: every other
  * resource's `generate` returns something you download, and this one never
@@ -41,6 +44,8 @@ export class VideoAnalysis {
     if (params.variantsNum !== undefined) {
       form.set("variants_num", String(params.variantsNum));
     }
+    // Omitting mode lets the server default (both) apply.
+    if (params.mode !== undefined) form.set("mode", params.mode);
     const res = await this.client.request("/v1/video-analysis", {
       method: "POST",
       body: form,

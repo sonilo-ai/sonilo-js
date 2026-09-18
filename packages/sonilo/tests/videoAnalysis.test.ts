@@ -53,12 +53,20 @@ describe("videoAnalysis", () => {
     expect(form.has("video")).toBe(false);
   });
 
-  it("omits prompt and variants_num when unset so the server defaults apply", async () => {
+  it("omits prompt, variants_num and mode when unset so the server defaults apply", async () => {
     const { fetch, client } = ackClient();
     await client.videoAnalysis.submit({ videoUrl: "https://x/v.mp4" });
     const form = fetch.mock.calls[0]![1]!.body as FormData;
     expect(form.has("prompt")).toBe(false);
     expect(form.has("variants_num")).toBe(false);
+    expect(form.has("mode")).toBe(false);
+  });
+
+  it("posts mode as the form field mode when set", async () => {
+    const { fetch, client } = ackClient();
+    await client.videoAnalysis.submit({ videoUrl: "https://x/v.mp4", mode: "sfx" });
+    const form = fetch.mock.calls[0]![1]!.body as FormData;
+    expect(form.get("mode")).toBe("sfx");
   });
 
   it("uploads a video as a file part", async () => {
@@ -99,5 +107,33 @@ describe("videoAnalysis", () => {
       "lo-fi hip hop, warm keys",
     ]);
     expect(brief.segments?.[0]?.label).toBe("intro");
+  });
+
+  it("analyze() returns mode, sfx_segments and sfx_prompt from a both-mode poll", async () => {
+    const both: VideoAnalysisResult = {
+      ...SUCCESS,
+      mode: "both",
+      sfx_segments: [
+        { start: 0, end: 12, label: "none", prompt: "wind, distant traffic" },
+        { start: 12, end: 30, label: "none", prompt: "tires screeching, glass" },
+      ],
+      sfx_prompt: "urban chase: engines, horns, shattering glass",
+    };
+    const fetch = vi.fn(async (url: RequestInfo | URL) =>
+      String(url).includes("/v1/tasks/") ? jsonResponse(both) : jsonResponse(ACK, 202),
+    );
+    const client = new SoniloClient({ apiKey: "k", fetch });
+    const brief = await client.videoAnalysis.analyze(
+      { videoUrl: "https://x/v.mp4", variantsNum: 2 },
+      { pollInterval: 0 },
+    );
+    expect(brief.mode).toBe("both");
+    expect(brief.sfx_prompt).toBe("urban chase: engines, horns, shattering glass");
+    expect(brief.sfx_segments?.map((s) => s.prompt)).toEqual([
+      "wind, distant traffic",
+      "tires screeching, glass",
+    ]);
+    // The music half is unchanged by the sound-design half riding along.
+    expect(brief.variations).toHaveLength(2);
   });
 });

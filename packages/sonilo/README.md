@@ -471,10 +471,15 @@ The result is the work order — a time-aligned `segments` plan plus one
 counterparts.
 
 Pass exactly one of `video` / `videoUrl`, plus optional `prompt` (guidance
-for the analysis, at most 2000 characters) and `variantsNum` (1-5, default
-1 — billed per brief). Source videos may be at most 360 seconds long, and
-billing has a 10-second floor, so a very short clip still costs the same as a
-10-second one.
+for the analysis, at most 2000 characters), `variantsNum` (1-5, default
+1 — billed per brief) and `mode`. `mode` picks which brief comes back:
+`"both"` (the default) returns the music brief in `segments` / `variations`
+**and** a sound-design brief in `sfx_segments` / `sfx_prompt` in one call;
+`"music"` or `"sfx"` returns only that one. `sfx_prompt` is a single string,
+authored once regardless of `variantsNum`. All three modes cost the same;
+`mode: "music"` reproduces the previous result shape. Source videos may be
+at most 480 seconds long, and billing has a 10-second floor, so a very short
+clip still costs the same as a 10-second one.
 
 ```ts
 const brief = await client.videoAnalysis.analyze({
@@ -486,6 +491,8 @@ const brief = await client.videoAnalysis.analyze({
 for (const segment of brief.segments ?? []) {
   console.log(`${segment.start}-${segment.end}s [${segment.label}] ${segment.prompt}`);
 }
+// The sound-design half of the brief, present in the default "both" mode.
+console.log(brief.sfx_prompt);
 
 // Feed a variation's prompt straight into a generation call.
 const task = await client.videoToMusic.submit({
@@ -496,8 +503,9 @@ const task = await client.videoToMusic.submit({
 
 The method is `analyze`, not `generate`, for the same reason there is no
 download helper on the result: every other resource returns something you
-save, and this one never does. Both `segments` and `variations` are optional
-on the type because a `processing` or `failed` poll carries neither. Use
+save, and this one never does. `segments`, `variations`, `sfx_segments` and
+`sfx_prompt` are all optional on the type because a `processing` or `failed`
+poll carries none of them. Use
 `submit()` instead of `analyze()` to get a `task_id` back immediately and
 poll it yourself with
 `client.tasks.wait<VideoAnalysisResult>(taskId)`.

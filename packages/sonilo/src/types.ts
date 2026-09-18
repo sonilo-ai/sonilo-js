@@ -782,11 +782,20 @@ export interface VideoAnalysisParams {
    * (1-5, default 1). Billed per brief.
    */
   variantsNum?: number;
+  /**
+   * Which brief to return. `"both"` (the server default) returns a
+   * music-direction brief in `segments` / `variations` plus a sound-design
+   * brief in `sfx_segments` / `sfx_prompt` in one call; `"music"` or
+   * `"sfx"` returns only that one. Same price for all three. Omit to accept
+   * the server default.
+   */
+  mode?: "both" | "music" | "sfx";
 }
 
-/** One time-aligned section of the analyzed video, with the scoring
- * direction for that stretch. Bounds are whole seconds — the backend
- * truncates any fractional upstream bound before it reaches the envelope. */
+/** One time-aligned section of the analyzed video, with the direction for
+ * that stretch: scoring in `segments`, sound design in `sfx_segments`.
+ * Bounds are whole seconds — the backend truncates any fractional upstream
+ * bound before it reaches the envelope. */
 export interface AnalysisSegment {
   start: number;
   end: number;
@@ -807,13 +816,29 @@ export interface AnalysisVariation {
  * generates nothing and there is nothing to download. The payload is the
  * work order — `segments` for a time-aligned plan, and one `prompt` per
  * requested variation, each ready to pass to videoToMusic, videoToSfx,
- * videoToSound or their video-to-video counterparts.
+ * videoToSound or their video-to-video counterparts. Which briefs are
+ * present depends on the request's `mode`, echoed back here: `"both"` (the
+ * server default) also carries a sound-design brief in `sfx_segments` /
+ * `sfx_prompt`; `"music"` and `"sfx"` carry only the one they name.
  *
- * Both lists are optional because a `processing` or `failed` poll carries
- * neither.
+ * Every list is optional because a `processing` or `failed` poll carries
+ * none of them.
  */
 export interface VideoAnalysisResult extends BaseTaskResult {
+  /** The request's `mode`, echoed back (`"both"` when it was omitted). */
+  mode?: "both" | "music" | "sfx";
   segments?: AnalysisSegment[];
   variations?: AnalysisVariation[];
+  /**
+   * Time-aligned sound-design plan. Only present in `"both"` mode, and
+   * absent on a `processing` or `failed` poll.
+   */
+  sfx_segments?: AnalysisSegment[];
+  /**
+   * The sound-design brief for the whole video, ready to pass to
+   * videoToSfx. A single string — it is authored once regardless of
+   * `variantsNum` — and only present in `"both"` mode.
+   */
+  sfx_prompt?: string;
   duration_seconds?: number;
 }
