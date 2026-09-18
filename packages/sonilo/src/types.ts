@@ -635,6 +635,8 @@ export type DubbingLanguage =
   | "pa_in"
   /** Sindhi as spoken in India — the only variant available, hence the region. */
   | "sd_in"
+  /** Hindi. Unqualified: the bare name is what the pipeline serves. */
+  | "hi"
   | (string & {});
 
 /**
