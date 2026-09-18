@@ -11,6 +11,7 @@ import { VideoToSound } from "./resources/videoToSound.js";
 import { VideoToVideoSound } from "./resources/videoToVideoSound.js";
 import { AudioDucking } from "./resources/audioDucking.js";
 import { Dubbing } from "./resources/dubbing.js";
+import { Proofread } from "./resources/proofread.js";
 import { VideoAnalysis } from "./resources/videoAnalysis.js";
 import { VERSION } from "./version.js";
 
@@ -64,6 +65,7 @@ export class SoniloClient {
   readonly videoToVideoSound: VideoToVideoSound;
   readonly audioDucking: AudioDucking;
   readonly dubbing: Dubbing;
+  readonly proofread: Proofread;
   readonly videoAnalysis: VideoAnalysis;
 
   constructor(options: SoniloClientOptions = {}) {
@@ -93,6 +95,7 @@ export class SoniloClient {
     this.videoToVideoSound = new VideoToVideoSound(this);
     this.audioDucking = new AudioDucking(this);
     this.dubbing = new Dubbing(this);
+    this.proofread = new Proofread(this);
     this.videoAnalysis = new VideoAnalysis(this);
   }
 

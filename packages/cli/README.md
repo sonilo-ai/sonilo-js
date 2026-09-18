@@ -196,6 +196,11 @@ sonilo audio-ducking --voice interview.mp4 --music-url https://example.com/bed.w
 # Dub a video into other languages (async only, one file per language)
 sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
 
+# Transcribe a video and translate the transcript into editable .srt files
+# (async only, one file per language plus the source language). Nothing is
+# dubbed — edit the files, then feed them to `sonilo dubbing --subtitle`.
+sonilo proofread --video clip.mp4 --languages ja,zh_cn --output scripts/clip.srt
+
 # Check an async task
 sonilo tasks get <task-id>
 sonilo tasks wait <task-id> --poll-interval 2000 --timeout 120000
@@ -207,6 +212,7 @@ Run `sonilo --help` for the full option list, including `--preserve-speech` and
 API default 0.5, lower lets the video lead, free of charge), `--music-prompt` /
 `--sfx-prompt` / `--ducking` / `--stem` for the `video-to-sound` commands,
 `--languages` / `--subtitle` / `--export-srt` / `--timeout` for `dubbing`,
+`--languages` / `--source-language` for `proofread`,
 `--variants` for the five commands that take it, `--stems` for
 `text-to-music` and `video-to-music` (see
 [Stems](#stems) below), and the `--format` options each command accepts. Music commands take `m4a`
@@ -263,6 +269,51 @@ at most 480 seconds long, and billing has a 10-second floor.
 sonilo video-analysis --video clip.mp4 --output brief.json
 sonilo video-to-music --video clip.mp4 --prompt "$(jq -r '.variations[0].prompt' brief.json)"
 ```
+
+### Proofread
+
+`proofread` transcribes a video and translates the transcript into editable `.srt` files — one per
+language, plus the source-language transcript. The video must have an audio track. Nothing is
+dubbed: this is the step **before** `dubbing`, so the wording can be corrected before any voice is
+rendered.
+
+```bash
+sonilo proofread --video clip.mp4 --languages ja,zh_cn --output scripts/clip.srt
+# writes scripts/clip.en.srt, scripts/clip.ja.srt, scripts/clip.zh_cn.srt
+```
+
+- `--languages` is comma-separated and takes the same codes as `dubbing` (`en, zh_cn, ja, ko, pt,
+  pt_br, es, es_419, de, fr, it, ru, th, ar, tr, vi, id, ta, ml, kn, gu, pa_in, sd_in, hi`), so a
+  proofread script can go straight into a dub. Omit it for the source-language transcript alone.
+- `--source-language` tells transcription which language to expect, which helps on short, noisy or
+  mixed-language audio. Omit it to have the language detected; either way the detected code is
+  printed and names the source-language file.
+- `--output` is a filename template, not a single destination, exactly as it is for `dubbing`: one
+  `.srt` is written per language with the code inserted before the extension, so
+  `--output scripts/clip.srt` writes `scripts/clip.en.srt`, `scripts/clip.fr.srt`, etc. Missing
+  directories are created. Default: `proofread.srt`. Every language is always written — the URLs on
+  the result are presigned and expire, and the files are the point.
+- The source language is **always** returned alongside the requested targets, so a one-language
+  request writes two files.
+- After the files, the command prints the detected source language, the cue count, and one line per
+  non-blocking warning (`Warning fr: high_text_speed (warning) at cue 33 — ...`). A warning never
+  withholds a file.
+- Source videos may be at most 300 seconds long and 300 MB. Billing is per second of video
+  multiplied by the number of target languages at $0.001/second, a transcript-only request counts as
+  one, and billing has a 10-second floor; there are 2 free runs — see [Free trial](#free-trial)
+  below.
+- `--timeout` defaults to 600000 ms, the usual default: a proofread job typically finishes in well
+  under a minute. If the wait does time out, the task keeps running server-side — resume it with
+  `sonilo tasks wait <task-id>`.
+- Edit the files, then feed them straight into `dubbing`, which makes the dub speak your exact
+  wording (drop the source-language file: `--subtitle` must match `--languages`):
+
+  ```bash
+  sonilo proofread --video clip.mp4 --languages es,fr --output scripts/clip.srt
+  # ... correct scripts/clip.es.srt and scripts/clip.fr.srt ...
+  sonilo dubbing --video clip.mp4 --languages es,fr \
+    --subtitle es=scripts/clip.es.srt --subtitle fr=scripts/clip.fr.srt
+  ```
 
 ## Segments
 

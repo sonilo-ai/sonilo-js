@@ -461,6 +461,99 @@ for (const [language, report] of Object.entries(task.subtitle_preflight ?? {})) 
 }
 ```
 
+## Proofread
+
+`client.proofread.submit()` / `.generate()` transcribe a video and translate
+the transcript into editable subtitle files — one `.srt` per language plus the
+source-language transcript. Nothing is dubbed and nothing is spoken: this is
+the step **before** `client.dubbing`, so the wording can be read and corrected
+before any voice is rendered.
+
+```ts
+import { SoniloClient } from "sonilo";
+import type { ProofreadResult } from "sonilo";
+
+const client = new SoniloClient();
+
+const result: ProofreadResult = await client.proofread.generate({
+  videoUrl: "https://example.com/clip.mp4",
+  languages: ["ja", "zh_cn"],
+});
+console.log(result.source_language, result.cue_count);
+for (const [language, url] of Object.entries(result.subtitles ?? {})) {
+  console.log(language, url); // presigned .srt URL
+}
+```
+
+Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https**, as
+on dubbing); the video must have an audio track. The optional `languages`
+array takes the same codes as `DubbingParams.languages` — see
+[Dubbing](#dubbing) for the list, and for what `pt_br`, `es_419`, `pa_in` and
+`sd_in` mean — so a proofread script can go straight into a dub. Omit
+`languages`, or pass `[]`, for the source-language transcript alone. The
+optional `sourceLanguage` is a hint telling transcription which language to
+expect, which helps on short, noisy or mixed-language audio; without it the
+language is detected, and either way the finished task reports what the
+transcript is in. Language codes are not checked client-side — the server owns
+that list, exactly as it does for dubbing.
+
+Proofread is async-only. The source video may be at most 300 seconds long and
+300 MB. Billing is per second of video multiplied by the number of target
+languages at $0.001/second, a transcript-only request counts as one language,
+and billing has a 10-second floor. Self-serve accounts get 2 free calls — see
+[Free trial](#free-trial). `generate()` uses the SDK's normal 10-minute wait
+default; unlike dubbing, this endpoint needs no longer one.
+
+The result is a `ProofreadResult`, whose `subtitles` is a map of language code
+to `.srt` URL and always includes the **detected** source language alongside
+the requested targets, so even a request with no `languages` comes back with
+one file. `cue_count` is the number of cues in the source script; every
+language has the same count. `warnings` maps a language to the non-blocking
+issues its script raised and is `{}` when there are none — nothing in it fails
+the task or withholds a file. Each issue carries `cue` (the 1-based cue it is
+about), `code` and `severity`, plus whatever measurement that code brought
+with it, kept verbatim:
+
+```ts
+for (const [language, issues] of Object.entries(result.warnings ?? {})) {
+  for (const issue of issues) {
+    console.log(language, issue.cue, issue.code, issue.characters_per_second);
+  }
+}
+```
+
+There are no download helpers on the result — as everywhere else in this SDK,
+fetch each URL with `download()` or `fetch()`. The URLs are presigned and
+expire, so save the files promptly.
+
+### Proofread, then dub
+
+The two endpoints are halves of one workflow: correct the `.srt` files
+proofread returned, then hand them to `client.dubbing` as
+`subtitles[<language>]` so the dub speaks exactly the approved wording.
+
+```ts
+const scripts = await client.proofread.generate({
+  videoUrl: "https://example.com/clip.mp4",
+  languages: ["es", "fr"],
+});
+
+// ... download scripts.subtitles.es / .fr, edit them, save them locally ...
+
+const dub = await client.dubbing.generate(
+  {
+    videoUrl: "https://example.com/clip.mp4",
+    languages: ["es", "fr"],
+    subtitles: { es: "./es.srt", fr: "./fr.srt" },
+  },
+  { timeout: 7_200_000 },
+);
+```
+
+Drop the source-language entry before passing scripts on: dubbing's
+`subtitles` keys must match its `languages` exactly, and proofread always
+returns the source language too.
+
 ## Video analysis
 
 `client.videoAnalysis` analyzes a video and returns a **creative brief** for
@@ -598,7 +691,7 @@ endpoints — no card required:
 
 | Free runs | Endpoints |
 | --- | --- |
-| 2 each | text-to-music, text-to-sfx, audio-ducking, video-analysis |
+| 2 each | text-to-music, text-to-sfx, audio-ducking, video-analysis, proofread |
 | 1 each | video-to-music, video-to-sfx, video-to-video-music, video-to-video-sfx, video-to-sound, video-to-video-sound |
 | 0 | dubbing |
 
