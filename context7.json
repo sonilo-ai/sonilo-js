@@ -31,8 +31,8 @@
     "client.audioDucking ducks an EXISTING music bed under an EXISTING voice track; nothing is generated. One of voice/voiceUrl, one of music/musicUrl. Voice may be audio or video (video returns a new .mp4); music must be audio. Result: output_url, no stems.",
     "client.dubbing dubs one video into many languages in one async call; languages: en, zh_cn, ja, ko, pt, pt_br, es, es_419, de, fr, it, ru, th, ar, tr, vi, id, ta, ml, kn, gu, pa_in, sd_in, hi; default zh_cn,es,fr. Billed per language, no free trial.",
     "A DubbingResult has no audio/video/output_url. Its results live in result.outputs, a map of language code to dubbed .mp4 URL. dubbing's videoUrl must be https \u2014 plain http is rejected by the pipeline, not just discouraged.",
-    "client.videoAnalysis returns a creative BRIEF, not media: the method is analyze() (not generate()) and VideoAnalysisResult has no download helper. Read result.segments (start/end/label/prompt) and result.variations[i].prompt.",
-    "Pass a videoAnalysis variation's prompt straight to videoToMusic / videoToSfx / videoToSound as their prompt. It takes one of video/videoUrl plus optional prompt and variantsNum (1-5, billed per brief); max 360s of video, 10s billing floor.",
+    "client.videoAnalysis returns a creative BRIEF, not media: analyze(), not generate(); no download helper. Read result.segments (start/end/label/prompt), result.variations[i].prompt and, in the default mode both, result.sfx_segments and sfx_prompt.",
+    "Pass a videoAnalysis variation's prompt to videoToMusic / videoToSound and sfx_prompt to videoToSfx. Params: one of video/videoUrl, optional prompt, variantsNum (1-5, billed per brief), mode (both|music|sfx, default both, same price); max 480s video.",
     "VideoAnalysisResult.segments and .variations are both OPTIONAL: a processing or failed poll carries neither. Guard with ?? [] before iterating rather than asserting them."
   ]
 }

@@ -7,6 +7,7 @@ import {
   SoniloClient,
   SoniloError,
   download,
+  type AnalysisSegment,
   type DubbingParams,
   type DubbingResult,
   type DuckingResult,
@@ -302,15 +303,20 @@ video-analysis options (async-only):
                           characters.
   --variants <n>          How many independent briefs to author for the same
                           video (1-5). Billed per brief. Default: 1
+  --mode <both|music|sfx> Which brief to return. both (default) returns a
+                          music brief and a sound-effects brief in one call;
+                          music or sfx returns only that one. Same price.
   --output <path>         Write the brief to this .json file. Omit it and the
                           brief is printed to stdout instead — this command
                           produces no media file, so there is nothing to save
                           by default.
   --timeout <ms>          How long to wait for the task. Default: 600000
-  Max video duration is 360 seconds; billing has a 10-second floor. This
+  Max video duration is 480 seconds; billing has a 10-second floor. This
   command GENERATES NOTHING: it returns a time-aligned "segments" plan and one
   ready-to-use "prompt" per variation, to feed into video-to-music,
-  video-to-sfx, video-to-sound or their video-to-video counterparts.
+  video-to-sfx, video-to-sound or their video-to-video counterparts. In the
+  default both mode it also returns "sfx_segments" and a single "sfx_prompt"
+  for video-to-sfx.
 
 Global options:
   --api-key <key>   Overrides the SONILO_API_KEY environment variable.
@@ -1541,17 +1547,25 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
  * an agent), and it should look like what GET /v1/tasks returned, without the
  * accounting fields that happen to be absent. */
 export function analysisBrief(result: VideoAnalysisResult): Record<string, unknown> {
+  const segment = (s: AnalysisSegment) => ({
+    start: s.start,
+    end: s.end,
+    label: s.label,
+    prompt: s.prompt,
+  });
   const brief: Record<string, unknown> = {
     task_id: result.task_id,
     status: result.status,
-    segments: (result.segments ?? []).map((s) => ({
-      start: s.start,
-      end: s.end,
-      label: s.label,
-      prompt: s.prompt,
-    })),
-    variations: (result.variations ?? []).map((v) => ({ prompt: v.prompt })),
   };
+  if (result.mode !== undefined) brief.mode = result.mode;
+  brief.segments = (result.segments ?? []).map(segment);
+  brief.variations = (result.variations ?? []).map((v) => ({ prompt: v.prompt }));
+  // Only present in the default "both" mode: the sound-design half of the
+  // brief. sfx_prompt is one string, authored once regardless of variants.
+  if (result.sfx_segments !== undefined) {
+    brief.sfx_segments = result.sfx_segments.map(segment);
+  }
+  if (result.sfx_prompt !== undefined) brief.sfx_prompt = result.sfx_prompt;
   if (result.variants_num !== undefined) brief.variants_num = result.variants_num;
   if (result.duration_seconds !== undefined) {
     brief.duration_seconds = result.duration_seconds;
@@ -1572,12 +1586,16 @@ export function parseVideoAnalysisArgs(argv: string[]): {
       "video-url": { type: "string" },
       prompt: { type: "string" },
       variants: { type: "string" },
+      mode: { type: "string" },
       output: { type: "string" },
       timeout: { type: "string" },
     },
   });
   if ((values.video === undefined) === (values["video-url"] === undefined)) {
     fail("pass exactly one of --video or --video-url");
+  }
+  if (values.mode !== undefined && !["both", "music", "sfx"].includes(values.mode)) {
+    fail("--mode must be one of both, music, sfx");
   }
   return {
     params: {
@@ -1587,6 +1605,7 @@ export function parseVideoAnalysisArgs(argv: string[]): {
       // The 1-5 bound is the backend's to enforce; the CLI only has to make
       // sure a non-numeric --variants does not reach the wire as "NaN".
       variantsNum: values.variants !== undefined ? Number(values.variants) : undefined,
+      mode: values.mode as VideoAnalysisParams["mode"],
     },
     output: values.output,
     timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
