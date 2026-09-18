@@ -384,10 +384,10 @@ Params: exactly one of `video` / `videoUrl` (`videoUrl` must be **https** —
 the dubbing pipeline fetches the source itself and rejects plain http). The
 optional `languages` array defaults to `["zh_cn", "es", "fr"]`; supported
 codes are `en, zh_cn, ja, ko, pt, pt_br, es, es_419, de, fr, it, ru, th,
-ar, tr, vi, id, ta, ml, kn, gu, pa_in, sd_in` (`pt_br` is Brazilian
+ar, tr, vi, id, ta, ml, kn, gu, pa_in, sd_in, hi` (`pt_br` is Brazilian
 Portuguese and `es_419` Latin American Spanish; plain `pt` and `es` stay
 unqualified, as does `ar`; `pa_in` and `sd_in` are Punjabi and Sindhi as
-spoken in India, the only variants available). The optional
+spoken in India, the only variants available; `hi` is Hindi). The optional
 `ducking`
 boolean (default off, free) ducks the background music/effects bed under the
 dubbed voice while it speaks; when off the bed is kept at a constant level.
