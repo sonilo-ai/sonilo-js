@@ -770,6 +770,78 @@ export interface DubbingResult extends BaseTaskResult {
   subtitle_export?: Record<string, SubtitleExportReport>;
 }
 
+export interface ProofreadParams {
+  /** Exactly one of `video` / `videoUrl`. The video must have an audio track. */
+  video?: VideoInput;
+  /**
+   * Exactly one of `video` / `videoUrl`. Must be an `https://` URL — the
+   * pipeline fetches the source itself and rejects plain http, exactly as
+   * dubbing does.
+   */
+  videoUrl?: string;
+  /**
+   * Target languages to translate the transcript into — the same codes
+   * `DubbingParams.languages` takes, so a proofread script can go straight
+   * into a dub. Omit it, or pass `[]`, for the source-language transcript
+   * alone. Billing multiplies by the number of targets; a transcript-only
+   * request counts as one.
+   */
+  languages?: DubbingLanguage[];
+  /**
+   * Tells transcription which language to expect, which helps on short, noisy
+   * or mixed-language audio. One of the same codes as `languages`. Omit it to
+   * have the language detected — either way the finished task's
+   * `source_language` reports what the transcript is in.
+   */
+  sourceLanguage?: DubbingLanguage;
+}
+
+/**
+ * One non-blocking validation issue on a proofread script.
+ *
+ * Nothing in here fails the task or withholds a file. The issue codes are
+ * server-owned and grow, and each brings its own measurement —
+ * `high_text_speed` comes with `characters_per_second`, and a code added later
+ * will come with fields this SDK has never heard of — so the index signature
+ * keeps them rather than dropping them. `cue` is the 1-based index of the
+ * subtitle cue the issue is about.
+ */
+export interface ProofreadIssue {
+  cue?: number;
+  code?: string;
+  severity?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * State of a proofread task (`tasks.get`) or its final result
+ * (`wait`/`generate`).
+ *
+ * Shaped like `DubbingResult`, because the two are halves of one workflow:
+ * proofread transcribes a video and translates the transcript, you correct the
+ * wording, and the corrected files go to `client.dubbing` as
+ * `subtitles[<language>]` so the dub speaks exactly what was approved.
+ */
+export interface ProofreadResult extends BaseTaskResult {
+  /**
+   * One `.srt` URL per language, keyed by language code. Always includes the
+   * DETECTED source language (reported in `source_language`) alongside one
+   * entry per requested target, so a request with no `languages` at all still
+   * comes back with one file.
+   */
+  subtitles?: Record<string, string>;
+  /** The language the transcript is in, whatever hint was sent. */
+  source_language?: string;
+  /** Subtitle cues in the source script; every language has the same count. */
+  cue_count?: number;
+  /**
+   * Non-blocking validation issues per language, `{}` when there are none. A
+   * warning never withholds that language's file.
+   */
+  warnings?: Record<string, ProofreadIssue[]>;
+  duration_seconds?: number;
+}
+
 export interface VideoAnalysisParams {
   /** Exactly one of `video` / `videoUrl`. */
   video?: VideoInput;

@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -13,6 +14,9 @@ import {
   type DuckingResult,
   type MusicMediaEntry,
   type MusicTaskResult,
+  type ProofreadIssue,
+  type ProofreadParams,
+  type ProofreadResult,
   type Segment,
   type SfxMedia,
   type SfxResult,
@@ -51,6 +55,7 @@ Commands:
   video-to-video-sfx            Add sound effects and get the video back
   audio-ducking                 Duck an existing music bed under a voice track
   dubbing                       Dub a video into other languages
+  proofread                     Transcribe a video and translate the transcript
   video-analysis                Analyze a video and print a creative brief
   tasks get <task-id>           Fetch the current state of an async task
   tasks wait <task-id>          Poll an async task until it finishes
@@ -296,6 +301,29 @@ dubbing options (async-only):
                           printed in the "Submitted task ..." line.
   Max video duration is 300 seconds. You are billed per language.
 
+proofread options (async-only):
+  --video <path>          Required (or --video-url). Local file to transcribe.
+  --video-url <url>       Required (or --video). Must be an https URL.
+  --languages <list>      Comma-separated target languages to translate the
+                          transcript into. Omit it for the source-language
+                          transcript alone. Same codes as dubbing (see the
+                          list above), so a proofread script can go straight
+                          into a dub.
+  --source-language <code>  Tell transcription which language to expect, which
+                          helps on short, noisy or mixed-language audio. One of
+                          the same codes. Omit it to have the language detected.
+  --output <path>         Filename template, not a single destination: one .srt
+                          is written per language with the code inserted before
+                          the extension, so --output scripts/clip.srt writes
+                          scripts/clip.en.srt, scripts/clip.fr.srt. Missing
+                          directories are created. Default: proofread.srt
+  --timeout <ms>          How long to wait for the task. Default: 600000
+  The video must have an audio track. Max video duration is 300 seconds, max
+  file size 300MB; billing has a 10-second floor. The source language is always
+  written alongside the requested targets. Nothing is dubbed and nothing is
+  spoken: edit the .srt files, then pass them to "sonilo dubbing --subtitle
+  <language>=<file>" so the dub speaks your exact wording.
+
 video-analysis options (async-only):
   --video <path>          Required (or --video-url). Local file to analyze.
   --video-url <url>       Required (or --video). Remote video to analyze.
@@ -337,6 +365,7 @@ Examples:
   sonilo video-to-music --video clip.mp4 --prompt "tense, driving synths" --output score.wav --format wav
   sonilo text-to-sfx --prompt "glass bottle shattering on concrete" --duration 3
   sonilo dubbing --video-url https://example.com/clip.mp4 --languages es,fr --output dubbed.mp4
+  sonilo proofread --video clip.mp4 --languages ja,zh_cn --output scripts/clip.srt
   sonilo video-analysis --video clip.mp4 --variants 2
   sonilo tasks get 9f5f2f7e-...
 `;
@@ -1343,14 +1372,21 @@ export async function runAudioDucking(client: SoniloClient, argv: string[]): Pro
  * single literal destination cannot express the result; this mirrors the
  * Python CLI's `--stem` naming so both tools read the same way. The extension
  * search stops at the last path separator so a dot in a directory name (e.g.
- * `v1.2/clip`) is never mistaken for a file extension. */
-export function languageOutputPath(template: string, language: string): string {
+ * `v1.2/clip`) is never mistaken for a file extension. `defaultExt` only
+ * decides what an extension-less template gets: dubbing's `.mp4`, or the
+ * `.srt` proofread passes, so `--output clip` there does not name its
+ * subtitles after a video container. */
+export function languageOutputPath(
+  template: string,
+  language: string,
+  defaultExt = "mp4",
+): string {
   const dot = template.lastIndexOf(".");
   const slash = Math.max(template.lastIndexOf("/"), template.lastIndexOf("\\"));
   if (dot > slash + 1) {
     return `${template.slice(0, dot)}.${language}${template.slice(dot)}`;
   }
-  return `${template}.${language}.mp4`;
+  return `${template}.${language}.${defaultExt}`;
 }
 
 /** The subtitle companion to one dubbed video's path: `clip.es.mp4` becomes
@@ -1541,6 +1577,113 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   }
 }
 
+/** One line per non-blocking issue on a proofread script. The measurement
+ * that came with the code (`characters_per_second` on `high_text_speed`) is
+ * appended verbatim, because the codes are server-owned and each brings its
+ * own; `cue`, `code` and `severity` are the three every issue has. A warning
+ * never withholds that language's file, so this is the only place it shows. */
+export function proofreadWarningLines(result: ProofreadResult): string[] {
+  const warnings = result.warnings ?? {};
+  const lines: string[] = [];
+  for (const language of Object.keys(warnings).sort()) {
+    const issues: ProofreadIssue[] = warnings[language] ?? [];
+    for (const issue of issues) {
+      const where = issue.cue !== undefined ? `cue ${issue.cue}` : "script";
+      const extras = Object.keys(issue)
+        .filter((key) => !["cue", "code", "severity"].includes(key))
+        .sort()
+        .map((key) => `${key}=${String(issue[key])}`)
+        .join(", ");
+      const detail = extras.length > 0 ? ` — ${extras}` : "";
+      lines.push(
+        `Warning ${language}: ${issue.code ?? "unknown"} (${issue.severity ?? "unknown"}) at ${where}${detail}`,
+      );
+    }
+  }
+  return lines;
+}
+
+export function parseProofreadArgs(argv: string[]): {
+  params: ProofreadParams;
+  output: string | undefined;
+  timeout: number | undefined;
+} {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      video: { type: "string" },
+      "video-url": { type: "string" },
+      languages: { type: "string" },
+      "source-language": { type: "string" },
+      output: { type: "string" },
+      timeout: { type: "string" },
+    },
+  });
+  if ((values.video === undefined) === (values["video-url"] === undefined)) {
+    fail("pass exactly one of --video or --video-url");
+  }
+  let languages: string[] | undefined;
+  if (values.languages !== undefined) {
+    languages = values.languages
+      .split(",")
+      .map((code) => code.trim())
+      .filter((code) => code.length > 0);
+    if (languages.length === 0) {
+      fail("--languages needs at least one language code, e.g. --languages es,fr");
+    }
+  }
+  return {
+    params: {
+      video: values.video,
+      videoUrl: values["video-url"],
+      languages,
+      sourceLanguage: values["source-language"],
+    },
+    output: values.output,
+    timeout: values.timeout !== undefined ? Number(values.timeout) : undefined,
+  };
+}
+
+/** proofread writes one .srt per language, the same way dubbing writes one
+ * video per language and through the same --output template: the URLs on the
+ * result are presigned and expire, and the files you then edit are the whole
+ * point of the endpoint. The source language always comes back too, whether or
+ * not any target languages were asked for.
+ *
+ * No dubbing-style default timeout: a proofread job typically finishes in well
+ * under a minute, so the SDK's own wait default is right here. */
+export async function runProofread(client: SoniloClient, argv: string[]): Promise<void> {
+  const { params, output, timeout } = parseProofreadArgs(argv);
+  const task = await client.proofread.submit(params);
+  console.error(`Submitted task ${task.task_id}, waiting...`);
+  const result = await client.tasks.wait<ProofreadResult>(task.task_id, {
+    ...(timeout !== undefined ? { timeout } : {}),
+  });
+  const subtitles = result.subtitles ?? {};
+  const languages = Object.keys(subtitles).sort();
+  if (languages.length === 0) fail("task succeeded but returned no subtitle files");
+  // Not outputPath()'s `output.<ext>`: the files are scripts, not a render,
+  // and "proofread.srt" is what the Python CLI defaults to as well.
+  const template = output ?? "proofread.srt";
+  // Unlike dubbing's, this template routinely names a directory of its own
+  // ("--output scripts/clip.srt"), so create it rather than fail on the write.
+  const directory = dirname(template);
+  if (directory !== "." && directory !== "") {
+    await mkdir(directory, { recursive: true });
+  }
+  for (const language of languages) {
+    const url = subtitles[language]!;
+    await writeAudio(await download(url), languageOutputPath(template, language, "srt"));
+  }
+  console.error(`Source language: ${result.source_language ?? "unknown"}`);
+  if (result.cue_count !== undefined) {
+    console.error(`Cues: ${result.cue_count}`);
+  }
+  for (const line of proofreadWarningLines(result)) {
+    console.error(line);
+  }
+}
+
 /** Flatten a finished video-analysis task back into the API's own envelope
  * shape. Deliberately re-emits the wire format rather than dumping the whole
  * poll body: this output is meant to be piped into another tool (or read by
@@ -1686,6 +1829,7 @@ async function main(): Promise<void> {
     "video-to-video-sfx",
     "audio-ducking",
     "dubbing",
+    "proofread",
     "video-analysis",
     "tasks",
   ]);
@@ -1747,6 +1891,8 @@ async function main(): Promise<void> {
       break;
     case "dubbing":
       return runDubbing(client, commandArgs);
+    case "proofread":
+      return runProofread(client, commandArgs);
     case "tasks": {
       const [subcommand, taskId, ...taskArgs] = commandArgs;
       if (subcommand === "get") return runTasksGet(client, taskId);

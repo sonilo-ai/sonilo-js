@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFile } from "node:fs/promises";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -18,11 +18,13 @@ import {
   outputPath,
   parseDubbingArgs,
   parseFormat,
+  parseProofreadArgs,
   parseSubtitles,
   readSegments,
   runAccount,
   runAuthCommand,
   runDubbing,
+  runProofread,
   runTasksGet,
   runTasksWait,
   runTextToMusic,
@@ -37,6 +39,7 @@ import {
   subtitleExportLines,
   subtitleOutputPath,
   subtitlePreflightLines,
+  proofreadWarningLines,
   variantOutputPath,
 } from "../src/cli.js";
 import { writeCredential, type StoredCredential } from "../src/credentials.js";
@@ -1665,6 +1668,12 @@ describe("languageOutputPath", () => {
   it("does not mistake a dot in a directory name for an extension", () => {
     expect(languageOutputPath("v1.2/clip", "de")).toBe("v1.2/clip.de.mp4");
   });
+
+  it("takes the default extension proofread passes for an extension-less template", () => {
+    expect(languageOutputPath("scripts/clip", "en", "srt")).toBe("scripts/clip.en.srt");
+    // An explicit extension always wins over the default.
+    expect(languageOutputPath("scripts/clip.srt", "en", "srt")).toBe("scripts/clip.en.srt");
+  });
 });
 
 describe("parseDubbingArgs", () => {
@@ -2011,6 +2020,259 @@ describe("runDubbing", () => {
     // submitted; that has to reach the terminal, not just the envelope.
     expect(errors).toContain("fr: script review_required, 3 change(s) to your lines");
     expect(errors).toContain("es: script ok, 0 change(s) to your lines");
+  });
+});
+
+describe("parseProofreadArgs", () => {
+  it("splits --languages on commas and trims", () => {
+    const { params } = parseProofreadArgs([
+      "--video-url",
+      "https://x/v.mp4",
+      "--languages",
+      "ja, zh_cn ,fr",
+    ]);
+    expect(params.languages).toEqual(["ja", "zh_cn", "fr"]);
+    expect(params.videoUrl).toBe("https://x/v.mp4");
+  });
+
+  it("leaves languages undefined when the flag is absent — the transcript alone", () => {
+    const { params } = parseProofreadArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.languages).toBeUndefined();
+  });
+
+  it("passes --source-language through as the hint", () => {
+    const { params } = parseProofreadArgs([
+      "--video",
+      "clip.mp4",
+      "--source-language",
+      "en",
+    ]);
+    expect(params.sourceLanguage).toBe("en");
+    expect(params.video).toBe("clip.mp4");
+  });
+
+  it("leaves sourceLanguage undefined when the flag is absent", () => {
+    const { params } = parseProofreadArgs(["--video-url", "https://x/v.mp4"]);
+    expect(params.sourceLanguage).toBeUndefined();
+  });
+
+  it("parses --timeout as a number and leaves it undefined otherwise", () => {
+    expect(
+      parseProofreadArgs(["--video-url", "https://x/v.mp4", "--timeout", "5000"]).timeout,
+    ).toBe(5000);
+    expect(parseProofreadArgs(["--video-url", "https://x/v.mp4"]).timeout).toBeUndefined();
+  });
+
+  it("exits when neither or both video sources are given", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+    expect(() => parseProofreadArgs([])).toThrow("process.exit");
+    expect(() =>
+      parseProofreadArgs(["--video", "clip.mp4", "--video-url", "https://x/v.mp4"]),
+    ).toThrow("process.exit");
+    vi.restoreAllMocks();
+  });
+});
+
+describe("proofreadWarningLines", () => {
+  it("names the cue and appends the measurement the code brought with it", () => {
+    expect(
+      proofreadWarningLines({
+        task_id: "pr1",
+        status: "succeeded",
+        warnings: {
+          fr: [
+            {
+              cue: 33,
+              code: "high_text_speed",
+              severity: "warning",
+              characters_per_second: 26.92,
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      "Warning fr: high_text_speed (warning) at cue 33 — characters_per_second=26.92",
+    ]);
+  });
+
+  it("falls back to the whole script when an issue carries no cue", () => {
+    expect(
+      proofreadWarningLines({
+        task_id: "pr1",
+        status: "succeeded",
+        warnings: { ja: [{ code: "odd", severity: "info" }] },
+      }),
+    ).toEqual(["Warning ja: odd (info) at script"]);
+  });
+
+  it("is empty when the task reported no warnings at all", () => {
+    expect(proofreadWarningLines({ task_id: "pr1", status: "succeeded" })).toEqual([]);
+    expect(
+      proofreadWarningLines({ task_id: "pr1", status: "succeeded", warnings: {} }),
+    ).toEqual([]);
+  });
+});
+
+describe("runProofread", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes one .srt per language, creates the directory, and prints the summary", async () => {
+    const { client, calls } = mockClient((url) =>
+      url.endsWith("/v1/proofread")
+        ? json({ task_id: "pr1", status: "processing" })
+        : json({
+            task_id: "pr1",
+            type: "proofread",
+            status: "succeeded",
+            duration_seconds: 206.32,
+            source_language: "en",
+            // The source language comes back alongside the requested target.
+            subtitles: {
+              en: "https://cdn.example.com/en.srt",
+              fr: "https://cdn.example.com/fr.srt",
+            },
+            cue_count: 65,
+            warnings: {
+              fr: [
+                {
+                  cue: 33,
+                  code: "high_text_speed",
+                  severity: "warning",
+                  characters_per_second: 26.92,
+                },
+              ],
+            },
+          }),
+    );
+    // A fresh Response per call: one download per language, and a body can
+    // only be read once.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line) => {
+      errors.push(String(line));
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    // A real temp root, because mkdir is NOT mocked here: the point of the
+    // assertion below is that a missing directory really is created.
+    const root = mkdtempSync(join(tmpdir(), "sonilo-proofread-"));
+    const template = join(root, "scripts", "clip.srt");
+    await runProofread(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--languages",
+      "fr",
+      "--output",
+      template,
+    ]);
+
+    expect(calls[0]?.url).toBe("https://api.sonilo.com/v1/proofread");
+    expect(existsSync(join(root, "scripts"))).toBe(true);
+    const written = vi.mocked(writeFile).mock.calls.map((c) => c[0]);
+    expect(written).toEqual([
+      join(root, "scripts", "clip.en.srt"),
+      join(root, "scripts", "clip.fr.srt"),
+    ]);
+    expect(errors).toContain("Source language: en");
+    expect(errors).toContain("Cues: 65");
+    expect(errors).toContain(
+      "Warning fr: high_text_speed (warning) at cue 33 — characters_per_second=26.92",
+    );
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("defaults --output to proofread.srt", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/proofread")
+        ? json({ task_id: "pr2", status: "processing" })
+        : json({
+            task_id: "pr2",
+            status: "succeeded",
+            source_language: "ja",
+            subtitles: { ja: "https://cdn.example.com/ja.srt" },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runProofread(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toEqual(["proofread.ja.srt"]);
+  });
+
+  it("waits with the SDK's own default timeout, not dubbing's two hours", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/proofread") ? json({ task_id: "pr3", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "pr3",
+      status: "succeeded",
+      subtitles: { en: "https://cdn.example.com/en.srt" },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runProofread(client, ["--video-url", "https://in.example.com/clip.mp4"]);
+
+    expect(waitSpy).toHaveBeenCalledWith("pr3", {});
+  });
+
+  it("forwards --timeout to tasks.wait", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/proofread") ? json({ task_id: "pr4", status: "processing" }) : json({}),
+    );
+    const waitSpy = vi.spyOn(client.tasks, "wait").mockResolvedValue({
+      task_id: "pr4",
+      status: "succeeded",
+      subtitles: { en: "https://cdn.example.com/en.srt" },
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runProofread(client, [
+      "--video-url",
+      "https://in.example.com/clip.mp4",
+      "--timeout",
+      "5000",
+    ]);
+
+    expect(waitSpy).toHaveBeenCalledWith("pr4", { timeout: 5000 });
+  });
+
+  it("exits when the finished task carries no subtitle files", async () => {
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/proofread")
+        ? json({ task_id: "pr5", status: "processing" })
+        : json({ task_id: "pr5", status: "succeeded", subtitles: {} }),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit");
+    });
+
+    await expect(
+      runProofread(client, ["--video-url", "https://in.example.com/clip.mp4"]),
+    ).rejects.toThrow("process.exit");
   });
 });
 
