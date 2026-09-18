@@ -319,7 +319,7 @@ proofread options (async-only):
                           directories are created. Default: proofread.srt
   --timeout <ms>          How long to wait for the task. Default: 600000
   The video must have an audio track. Max video duration is 300 seconds, max
-  file size 300MB; billing has a 10-second floor. The source language is always
+  file size 300 MB; billing has a 10-second floor. The source language is always
   written alongside the requested targets. Nothing is dubbed and nothing is
   spoken: edit the .srt files, then pass them to "sonilo dubbing --subtitle
   <language>=<file>" so the dub speaks your exact wording.
@@ -1592,7 +1592,10 @@ export function proofreadWarningLines(result: ProofreadResult): string[] {
       const extras = Object.keys(issue)
         .filter((key) => !["cue", "code", "severity"].includes(key))
         .sort()
-        .map((key) => `${key}=${String(issue[key])}`)
+        .map((key) => {
+          const value = issue[key];
+          return `${key}=${typeof value === "object" && value !== null ? JSON.stringify(value) : String(value)}`;
+        })
         .join(", ");
       const detail = extras.length > 0 ? ` — ${extras}` : "";
       lines.push(

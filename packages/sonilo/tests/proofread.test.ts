@@ -23,7 +23,7 @@ function ackClient() {
  * shortened), verbatim: a subtitles map that includes the DETECTED source
  * language alongside the requested targets, the cue count, and the
  * per-language warnings with their code-specific measurement. */
-const FINISHED = {
+const FINISHED: ProofreadResult = {
   task_id: "4288764d-0057-4a77-885e-03c0391c7c1d",
   type: "proofread",
   status: "succeeded",
