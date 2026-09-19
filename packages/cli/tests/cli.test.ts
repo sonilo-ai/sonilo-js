@@ -1906,6 +1906,41 @@ describe("runDubbing", () => {
     expect(written).toContain("out/clip.fr.mp4");
   });
 
+  it("reports the free 15-second preview beside the file it wrote", async () => {
+    const message =
+      "Free preview: the first 15 seconds of your 60-second video, in 1 language. " +
+      "Translating the full video costs $3.49 — add funds at https://platform.sonilo.com/dashboard/billing";
+    const { client } = mockClient((url) =>
+      url.endsWith("/v1/dubbing")
+        ? json({ task_id: "db2", status: "processing" })
+        : json({
+            task_id: "db2",
+            status: "succeeded",
+            outputs: { ja: "https://cdn.example.com/ja.mp4" },
+            duration_seconds: 15,
+            trial_preview: {
+              preview_seconds: 15,
+              source_duration_seconds: 60,
+              trimmed: true,
+              languages: 1,
+              full_video_cost_usd: 3.49,
+              message,
+            },
+          }),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array([1, 2, 3])),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(writeFile).mockClear();
+
+    await runDubbing(client, ["--video-url", "https://in.example.com/clip.mp4", "--languages", "ja"]);
+
+    expect(vi.mocked(writeFile).mock.calls.map((c) => c[0])).toHaveLength(1);
+    expect(error).toHaveBeenCalledWith(message);
+  });
+
   it("exits when neither --video nor --video-url is given", async () => {
     const { client } = mockClient(() => json({}));
     vi.spyOn(console, "error").mockImplementation(() => {});

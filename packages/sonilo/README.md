@@ -403,9 +403,10 @@ preserving the exact original picture matters more than matching lip movement.
 The background bed is rebuilt either way, so `ducking` behaves the same.
 
 Dubbing is async-only, and the source video may be at most 300 seconds long.
-You are billed per language. Dubbing has **no free trial allowance** — unlike
-every other endpoint, every call bills from the first one (see
-[Free trial](#free-trial)).
+You are billed per language. Dubbing's one free run is a **15-second
+preview** — the first single-language call without scripts translates only
+the first 15 seconds of the video, and the result's `trial_preview` quotes
+what the whole video would cost (see [Free trial](#free-trial)).
 
 The result is a `DubbingResult`, whose `outputs` is a map of language code to
 dubbed `.mp4` URL — not the `audio`/`video`/`output_url` shape the other
@@ -693,13 +694,15 @@ endpoints — no card required:
 | --- | --- |
 | 2 each | text-to-music, text-to-sfx, audio-ducking, video-analysis, proofread |
 | 1 each | video-to-music, video-to-sfx, video-to-video-music, video-to-video-sfx, video-to-sound, video-to-video-sound |
-| 0 | dubbing |
+| 1, as a 15-second preview | dubbing |
 
 Once an endpoint's free runs are used up, calls to it bill at the normal rate.
-**Dubbing has no free trial allowance at all** — it bills every call from the
-first one. This is deliberate: dubbing charges `video_duration ×
-number_of_languages`, so a single "free" run could easily cost more than the
-free allowance on every other endpoint combined.
+**Dubbing's free run is a preview, not a full call:** dubbing charges
+`video_duration × number_of_languages`, so the first single-language call
+without scripts translates only the first 15 seconds of the video, at no
+charge, and the result carries `trial_preview` — what was trimmed and what
+the whole video would cost (`full_video_cost_usd`). Several languages,
+scripts, and every call after that are billed.
 
 The table above is the current default. Read the live numbers from
 `account.services()` rather than hard-coding them — see

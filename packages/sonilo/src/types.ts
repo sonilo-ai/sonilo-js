@@ -752,6 +752,27 @@ export interface DubbingParams {
   exportSrt?: boolean;
 }
 
+/**
+ * Dubbing's free trial is a 15-second preview: a self-serve account's first
+ * single-language call without scripts translates only the first 15 seconds
+ * of the video, at no charge. Present on that task in every state; absent on
+ * every paid run.
+ */
+export interface TrialPreview {
+  /** Length of the preview, in seconds (15). */
+  preview_seconds: number;
+  /** The untrimmed source's length, in seconds. */
+  source_duration_seconds: number;
+  /** Whether the source was longer than the preview and was cut. */
+  trimmed: boolean;
+  /** Languages in this run (1). */
+  languages: number;
+  /** What translating the whole video would cost, at this account's rate. */
+  full_video_cost_usd: number;
+  /** Ready-made sentence: what was trimmed, the quote, where to add funds. */
+  message: string;
+}
+
 export interface DubbingResult extends BaseTaskResult {
   /**
    * One dubbed video URL per requested language, keyed by language code.
@@ -768,6 +789,12 @@ export interface DubbingResult extends BaseTaskResult {
   subtitle_preflight?: Record<string, SubtitlePreflightReport>;
   /** How each language's re-timed SRT came out, keyed by language. */
   subtitle_export?: Record<string, SubtitleExportReport>;
+  /**
+   * Set when this run was the account's free 15-second preview. Then
+   * `duration_seconds` is the preview's length, not the source's — see
+   * `TrialPreview`.
+   */
+  trial_preview?: TrialPreview;
 }
 
 export interface ProofreadParams {

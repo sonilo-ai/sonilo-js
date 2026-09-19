@@ -352,8 +352,8 @@ you run it:
   task returns one video per language, so `--output clip.mp4` writes
   `clip.es.mp4`, `clip.fr.mp4`, and so on.
 - Billing is **per language** — a three-language call costs three times a
-  one-language call — and `dubbing` has **no free trial runs** at all (see
-  [Free trial](#free-trial) below).
+  one-language call. The one free run is a **15-second preview**; its message is
+  printed with the other status lines (see [Free trial](#free-trial) below).
 - `--timeout` defaults to 7200000 ms (2 hours), matching the backend's own
   ceiling for a dubbing job. If the wait still times out the task keeps
   running server-side — resume watching it with `sonilo tasks wait <task-id>`.
@@ -463,10 +463,11 @@ clean JSON. Once a service shows `0` left, calls to it fail with
 `HTTP 402: ... (trial_exhausted)` until a payment method is added — that is
 the only 402 a retry can never fix.
 
-**`dubbing` never appears in that summary: it has zero free runs and bills
-from the very first call.** This is deliberate — dubbing charges `video
-duration × number of languages`, so a single free run on it would be worth
-far more than the free allowance on every other command combined.
+**`dubbing` shows `1` there, but that run is a 15-second preview, not a full
+call:** dubbing charges `video duration × number of languages`, so the first
+single-language call without `--subtitle` translates only the first 15 seconds
+of the video, at no charge, and prints what the whole video would cost.
+Several languages, scripts, and every call after that are billed.
 
 ## Rate limits
 
