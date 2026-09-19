@@ -28,6 +28,7 @@ export type {
   DubbingLanguage,
   DubbingParams,
   DubbingResult,
+  TrialPreview,
   DubbingTask,
   DuckingResult,
   ErrorEvent,

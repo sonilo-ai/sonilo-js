@@ -1575,6 +1575,14 @@ export async function runDubbing(client: SoniloClient, argv: string[]): Promise<
   for (const line of subtitleExportLines(result)) {
     console.error(line);
   }
+  if (result.trial_preview) {
+    // The free preview translated only the first 15 seconds. Say so with the
+    // other status lines, so the clip is never mistaken for the whole video.
+    console.error(
+      result.trial_preview.message ||
+        "Free preview: only the first 15 seconds of the video were translated.",
+    );
+  }
 }
 
 /** One line per non-blocking issue on a proofread script. The measurement
