@@ -16,13 +16,13 @@ then give it to the client either as an environment variable (recommended) or
 inline:
 
 ```bash
-export SONILO_API_KEY=sk_...
+export SONILO_API_KEY=sk-...
 ```
 
 ```ts
 const sonilo = new SoniloClient();                     // reads SONILO_API_KEY
 // or pass it directly:
-const sonilo = new SoniloClient({ apiKey: "sk_..." });
+const sonilo = new SoniloClient({ apiKey: "sk-..." });
 ```
 
 Keep your key secret — use it only server-side, never commit it, and prefer the
@@ -39,7 +39,7 @@ const track = await sonilo.textToMusic.generate({
   prompt: "cinematic orchestral score",
   duration: 60,
 });
-// track.audio is a Uint8Array of MP3 bytes
+// track.audio is a Uint8Array of m4a (AAC) bytes; set outputFormat for wav or mp3
 ```
 
 `duration` is optional. Leave it out and Sonilo picks the length from your
@@ -608,7 +608,7 @@ poll it yourself with
 
 ```ts
 const client = new SoniloClient({
-  apiKey: "sk_...", // defaults to SONILO_API_KEY
+  apiKey: "sk-...", // defaults to SONILO_API_KEY
   baseUrl: "https://api.sonilo.com",
   timeout: 600_000, // milliseconds, default 600000 (10 minutes)
 });
