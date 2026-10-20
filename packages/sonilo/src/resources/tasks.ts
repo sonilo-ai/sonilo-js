@@ -3,7 +3,11 @@ import { SoniloError, TaskFailedError, TaskTimeoutError } from "../errors.js";
 import type { BaseTaskResult, SfxResult, WaitOptions } from "../types.js";
 
 export const DEFAULT_POLL_INTERVAL_MS = 2000;
-export const DEFAULT_WAIT_TIMEOUT_MS = 600_000;
+/** 45 minutes. The API lets a task wait up to 40 minutes (2400 s) for a
+ * generation runner before failing it, so this is that queue ceiling plus
+ * room for the generation itself. Giving up earlier than the server does
+ * abandons a task that may still succeed, and is still billed. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 2_700_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SoniloError, TaskFailedError, TaskTimeoutError } from "../src/errors.js";
+import { DEFAULT_WAIT_TIMEOUT_MS } from "../src/resources/tasks.js";
 import type { MusicTaskResult } from "../src/types.js";
 import { mockClient } from "./helpers.js";
 
@@ -49,6 +50,11 @@ describe("tasks.get", () => {
 });
 
 describe("tasks.wait", () => {
+  it("waits 45 minutes by default, past the server's 2400 s queue ceiling", () => {
+    expect(DEFAULT_WAIT_TIMEOUT_MS).toBe(2_700_000);
+    expect(DEFAULT_WAIT_TIMEOUT_MS).toBeGreaterThan(2_400_000);
+  });
+
   it("polls until succeeded", async () => {
     let n = 0;
     const { client, calls } = mockClient(() => jsonResponse(++n < 3 ? PROCESSING : SUCCEEDED));

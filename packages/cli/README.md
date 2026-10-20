@@ -302,7 +302,7 @@ sonilo proofread --video clip.mp4 --languages ja,zh_cn --output scripts/clip.srt
   multiplied by the number of target languages at $0.001/second, a transcript-only request counts as
   one, and billing has a 10-second floor; there are 2 free runs — see [Free trial](#free-trial)
   below.
-- `--timeout` defaults to 600000 ms, the usual default: a proofread job typically finishes in well
+- `--timeout` defaults to 2700000 ms (45 minutes), the usual default: a proofread job typically finishes in well
   under a minute. If the wait does time out, the task keeps running server-side — resume it with
   `sonilo tasks wait <task-id>`.
 - Edit the files, then feed them straight into `dubbing`, which makes the dub speak your exact

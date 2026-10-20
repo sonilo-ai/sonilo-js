@@ -317,7 +317,7 @@ proofread options (async-only):
                           the extension, so --output scripts/clip.srt writes
                           scripts/clip.en.srt, scripts/clip.fr.srt. Missing
                           directories are created. Default: proofread.srt
-  --timeout <ms>          How long to wait for the task. Default: 600000
+  --timeout <ms>          How long to wait for the task. Default: 2700000
   The video must have an audio track. Max video duration is 300 seconds, max
   file size 300 MB; billing has a 10-second floor. The source language is always
   written alongside the requested targets. Nothing is dubbed and nothing is
@@ -338,7 +338,7 @@ video-analysis options (async-only):
                           brief is printed to stdout instead — this command
                           produces no media file, so there is nothing to save
                           by default.
-  --timeout <ms>          How long to wait for the task. Default: 600000
+  --timeout <ms>          How long to wait for the task. Default: 2700000
   Max video duration is 480 seconds; billing has a 10-second floor. This
   command GENERATES NOTHING: it returns a time-aligned "segments" plan and one
   ready-to-use "prompt" per variation, to feed into video-to-music,
@@ -736,12 +736,12 @@ export async function runTasksWait(
  *
  * Stem separation runs after generation and gives itself up to 30 minutes
  * before giving up server-side, on top of the generation the SDK's generic
- * default (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is sized for. Keeping the
+ * default (`DEFAULT_WAIT_TIMEOUT_MS`, 45 minutes) is sized for. Keeping the
  * generic default would make the CLI throw `TaskTimeoutError` on healthy
- * stems runs, so `--stems` waits 40 minutes: the generic 10 plus the
+ * stems runs, so `--stems` waits 75 minutes: the generic 45 plus the
  * backend's own 30-minute separation ceiling. Mirrors how `dubbing` raises
  * its wait to that backend's ceiling (`DUBBING_WAIT_TIMEOUT_MS`). */
-export const STEMS_WAIT_TIMEOUT_MS = 2_400_000;
+export const STEMS_WAIT_TIMEOUT_MS = 4_500_000;
 
 /** The four stems every successful separation carries, in the order the
  * files are written. Matches `StemsEntry` in packages/sonilo/src/types.ts. */
@@ -1474,9 +1474,9 @@ export function subtitleExportLines(result: DubbingResult): string[] {
  *
  * The dubbing backend polls its own pipeline for up to 7200000 ms (2 hours)
  * before giving up server-side. The SDK's generic default
- * (`DEFAULT_WAIT_TIMEOUT_MS`, 10 minutes) is far too short for this endpoint:
- * a 300-second video dubbed into several languages routinely takes longer
- * than 10 minutes, so using the generic default would make the CLI throw
+ * (`DEFAULT_WAIT_TIMEOUT_MS`, 45 minutes) is too short for this endpoint:
+ * a 300-second video dubbed into several languages can take longer than
+ * that, so using the generic default would make the CLI throw
  * `TaskTimeoutError` and exit non-zero on runs that are still succeeding
  * server-side. Matching the backend's own 2-hour ceiling means the CLI gives
  * up only once the backend has; `--timeout` overrides it. */

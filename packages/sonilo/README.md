@@ -161,7 +161,7 @@ array**, so never treat it as "no stems" — check `stems` itself for what did
 arrive. Either way the generated `audio` is unaffected.
 
 Separation runs after generation and typically adds 2-6 minutes to the wait
-(it gives up after 30), so raise `tasks.wait`'s `timeout` beyond the 10-minute
+(it gives up after 30), so raise `tasks.wait`'s `timeout` beyond the 45-minute
 default. The stems normally follow the request's `outputFormat`; each stem's
 own `content_type` reports what was actually delivered.
 
@@ -172,7 +172,7 @@ const task = await client.textToMusic.submit({
   stems: true, // free — adds drums/bass/vocals/other alongside the mix
 });
 const result = await client.tasks.wait<MusicTaskResult>(task.task_id, {
-  timeout: 2_400_000, // separation can add up to 30 minutes
+  timeout: 4_500_000, // separation can add up to 30 minutes
 });
 
 if (result.stems_error) console.warn(result.stems_error); // may be partial
@@ -366,10 +366,10 @@ for (const [language, url] of Object.entries(result.outputs ?? {})) {
 ```
 
 `generate()` wraps submit + poll, same as the other async endpoints, and
-accepts a `{ timeout }` option to override the default 10-minute wait. The
-dubbing pipeline can take much longer than that, especially with several
-languages in one call, so pass a longer timeout for anything but the shortest
-clips. 7,200,000 ms matches the backend's own ceiling for a dubbing job and is
+accepts a `{ timeout }` option to override the default 45-minute wait. The
+dubbing pipeline can take longer than that, especially with several
+languages in one call, so pass a longer timeout for long videos or many
+languages. 7,200,000 ms matches the backend's own ceiling for a dubbing job and is
 what the CLI defaults to. For long jobs you can also use `submit()` plus your
 own `client.tasks.wait()`, as above:
 
@@ -676,7 +676,7 @@ const task = await client.videoToSfx.submit({
   segments: [{ start: 0, end: 2.5, prompt: "footsteps on gravel" }],
   audioFormat: "wav",
 });
-const result = await client.tasks.wait(task.task_id, { pollInterval: 2000, timeout: 600000 });
+const result = await client.tasks.wait(task.task_id, { pollInterval: 2000, timeout: 2_700_000 });
 ```
 
 `tasks.get(taskId)` fetches state once and never throws on a failed task;
