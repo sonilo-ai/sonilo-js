@@ -379,7 +379,7 @@ export interface MusicTaskResult extends BaseTaskResult {
 export interface WaitOptions {
   /** Milliseconds between polls. Default 2000. */
   pollInterval?: number;
-  /** Overall deadline in milliseconds. Default 600000. */
+  /** Overall deadline in milliseconds. Default 2700000 (45 minutes). */
   timeout?: number;
 }
 
